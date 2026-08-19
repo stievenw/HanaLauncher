@@ -31,7 +31,12 @@ pub enum TaskEvent {
     /// The remote version list was fetched (newest stable release + full list).
     VersionList { latest: Option<String>, versions: Vec<ManifestVersion> },
     /// Fabric/Quilt loader lists for one Minecraft version were fetched.
-    Loaders { mc: String, fabric: Vec<LoaderMeta>, quilt: Vec<LoaderMeta> },
+    Loaders {
+        mc: String,
+        fabric: Vec<LoaderMeta>,
+        quilt: Vec<LoaderMeta>,
+        forge: Vec<LoaderMeta>,
+    },
     /// Game process produced a line of output.
     GameOutput(String),
     /// Game process was spawned successfully.

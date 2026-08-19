@@ -360,6 +360,8 @@ struct InstDraft {
     authlib_url: String,
     game_dir_mode: crate::config::GameDirMode,
     game_dir: Option<String>,
+    data_dir_mode: crate::config::DataDirMode,
+    data_dir: Option<String>,
 }
 
 impl InstDraft {
@@ -379,6 +381,8 @@ impl InstDraft {
             authlib_url: "ely.by".to_string(),
             game_dir_mode: crate::config::GameDirMode::Launcher,
             game_dir: None,
+            data_dir_mode: crate::config::DataDirMode::Launcher,
+            data_dir: None,
         }
     }
 
@@ -398,6 +402,8 @@ impl InstDraft {
             authlib_url: inst.authlib_url.clone(),
             game_dir_mode: inst.game_dir_mode.clone(),
             game_dir: inst.game_dir.clone(),
+            data_dir_mode: inst.data_dir_mode.clone(),
+            data_dir: inst.data_dir.clone(),
         }
     }
 }
@@ -418,6 +424,7 @@ pub struct HanaApp {
     loaders_mc: String,
     fabric_loaders: Vec<crate::minecraft::LoaderMeta>,
     quilt_loaders: Vec<crate::minecraft::LoaderMeta>,
+    forge_loaders: Vec<crate::minecraft::LoaderMeta>,
     search: String,
     versions_tab_downloaded: bool,
 
@@ -552,7 +559,7 @@ impl HanaApp {
         cfg.channel = channel;
         apply_font_mode(ctx, &cfg.font_mode);
 
-        let root = cfg.data_root_for();
+        let root = crate::config::Config::launcher_root();
         // Create the standard launcher folders right away so the install
         // directory looks like a normal launcher instead of an empty folder.
         for sub in ["versions", "libraries", "assets", "runtime", "logs"] {
@@ -575,6 +582,7 @@ impl HanaApp {
             loaders_mc: String::new(),
             fabric_loaders: Vec::new(),
             quilt_loaders: Vec::new(),
+            forge_loaders: Vec::new(),
             search: String::new(),
             versions_tab_downloaded: false,
             task_active: false,
@@ -688,10 +696,16 @@ device_code: None,
                         }
                     }
                 }
-                TaskEvent::Loaders { mc, fabric, quilt } => {
+                TaskEvent::Loaders {
+                    mc,
+                    fabric,
+                    quilt,
+                    forge,
+                } => {
                     self.loaders_mc = mc;
                     self.fabric_loaders = fabric;
                     self.quilt_loaders = quilt;
+                    self.forge_loaders = forge;
                 }
                 TaskEvent::GameStarted(pid) => {
                     self.running_pid = Some(pid);
@@ -746,13 +760,23 @@ device_code: None,
         }
     }
 
+    /// The data root (versions/libraries/assets/runtime) of the active instance.
+    /// Falls back to the launcher's own folder when no instance is selected.
+    fn instance_root(&self) -> PathBuf {
+        self.cfg
+            .active_instance()
+            .map(|i| i.data_root_for())
+            .unwrap_or_else(|| self.root.clone())
+    }
+
     fn refresh_installed(&mut self) {
+        let root = self.instance_root();
         let mut set = HashSet::new();
-        let dir = self.root.join("versions");
+        let dir = root.join("versions");
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for e in rd.flatten() {
                 let id = e.file_name().to_string_lossy().into_owned();
-                if crate::install::version_is_installed(&self.root, &id) {
+                if crate::install::version_is_installed(&root, &id) {
                     set.insert(id);
                 }
             }
@@ -761,14 +785,8 @@ device_code: None,
         self.scan_custom_versions();
     }
 
-    /// Re-resolve the launcher data root after the user changed the data-folder
-    /// setting, recreate the standard folders and refresh what is installed.
-    fn apply_data_root(&mut self) {
-        self.root = self.cfg.data_root_for();
-        for sub in ["versions", "libraries", "assets", "runtime", "logs"] {
-            let _ = std::fs::create_dir_all(self.root.join(sub));
-        }
-        let _ = std::fs::create_dir_all(&self.root);
+    /// Re-scan after the data folder of the active instance changed.
+    fn refresh_active_root(&mut self) {
         self.refresh_installed();
     }
 
@@ -778,20 +796,24 @@ device_code: None,
     /// installed (valid JSON + client jar present), so the dropdown never lists
     /// broken/partial folders.
     fn scan_custom_versions(&mut self) {
+        let root = self.instance_root();
         let manifest_ids: HashSet<String> = self.versions.iter().map(|v| v.id.clone()).collect();
         let mut custom: Vec<ManifestVersion> = Vec::new();
-        let dir = self.root.join("versions");
+        let dir = root.join("versions");
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for e in rd.flatten() {
                 let id = e.file_name().to_string_lossy().into_owned();
                 if manifest_ids.contains(&id) {
                     continue;
                 }
-                if !crate::install::version_is_installed(&self.root, &id) {
+                if !crate::install::version_is_installed(&root, &id) {
                     continue;
                 }
-                if let Ok(v) = crate::install::load_local_version(&self.root, &id) {
-                    if v.main_class.is_empty() {
+                if let Ok(v) = crate::install::load_local_version(&root, &id) {
+                    // Valid only when launchable: has its own main class or
+                    // resolves through a parent (inheritsFrom), like
+                    // Fabric/Quilt/Forge loader profiles.
+                    if v.main_class.is_empty() && v.inherits_from.is_none() {
                         continue;
                     }
                 } else {
@@ -950,7 +972,7 @@ device_code: None,
         // the user whether to update first).
         if !inst.is_latest && !self.installed.contains(&version_id) {
             self.toast(ToastKind::Info, t.installing_version);
-            let root = self.root.clone();
+            let root = inst.data_root_for();
             self.start(move |tx, drx| crate::tasks::install_version(tx, drx, version_id, root));
             return;
         }
@@ -966,7 +988,7 @@ device_code: None,
             return;
         }
         let req = LaunchRequest { config: self.cfg.clone(), account, version: Some(version_id.clone()) };
-        let root = self.root.clone();
+        let root = inst.data_root_for();
         self.start(move |tx, drx| {
             crate::tasks::launch_game(tx, drx, req, root);
         });
@@ -2117,6 +2139,7 @@ device_code: None,
                         self.loaders_mc = sel;
                         self.fabric_loaders.clear();
                         self.quilt_loaders.clear();
+                        self.forge_loaders.clear();
                     }
                     if ui
                         .add_enabled(!self.task_active, egui::Button::new(t.client_mods_load))
@@ -2144,13 +2167,8 @@ device_code: None,
                         }
                         ui.add_space(6.0);
                         ui.label(RichText::new(name).strong().size(12.5));
-                        let prefix = if kind == crate::minecraft::LoaderKind::Fabric {
-                            "fabric-loader"
-                        } else {
-                            "quilt-loader"
-                        };
                         for meta in metas.iter().take(MAX) {
-                            let id = format!("{prefix}-{}-{}", meta.version, mc);
+                            let id = kind.version_id(&mc, &meta.version);
                             let installed = self.installed.contains(&id);
                             ui.horizontal(|ui| {
                                 let label = if meta.stable == Some(false) {
@@ -2186,9 +2204,10 @@ device_code: None,
 
                 loader_section(ui, "Fabric", crate::minecraft::LoaderKind::Fabric, &self.fabric_loaders);
                 loader_section(ui, "Quilt", crate::minecraft::LoaderKind::Quilt, &self.quilt_loaders);
+                loader_section(ui, "Forge", crate::minecraft::LoaderKind::Forge, &self.forge_loaders);
 
                 for (kind, mc, loader) in install_targets {
-                    let root = self.root.clone();
+                    let root = self.instance_root();
                     self.start(move |tx, drx| {
                         crate::tasks::install_custom_client(tx, drx, kind, mc, loader, root);
                     });
@@ -2211,11 +2230,11 @@ device_code: None,
                         }
                     }
                     let _ = save_config(&self.cfg);
-                    let root = self.root.clone();
+                    let root = self.instance_root();
                     self.start(move |tx, drx| crate::tasks::install_version(tx, drx, id, root));
                 }
                 VersionAction::Repair(id) => {
-                    let root = self.root.clone();
+                    let root = self.instance_root();
                     self.start(move |tx, drx| crate::tasks::repair_version(tx, drx, id, root));
                 }
                 VersionAction::DeleteData(id) => {
@@ -2298,7 +2317,7 @@ device_code: None,
         if let Some(action) = action {
             match action {
                 VersionAction::Repair(id) => {
-                    let root = self.root.clone();
+                    let root = self.instance_root();
                     self.start(move |tx, drx| crate::tasks::repair_version(tx, drx, id, root));
                 }
                 VersionAction::DeleteData(id) => {
@@ -2696,6 +2715,76 @@ device_code: None,
                     .color(TEXT_WEAK)
                     .size(10.5),
             );
+            ui.add_space(10.0);
+            ui.label(RichText::new(t.data_dir_label).strong().size(13.0));
+            ui.horizontal(|ui| {
+                let selected = match draft.data_dir_mode {
+                    crate::config::DataDirMode::Launcher => t.data_dir_launcher,
+                    crate::config::DataDirMode::Original => t.data_dir_original,
+                    crate::config::DataDirMode::Custom => t.data_dir_custom,
+                };
+                let mut new_mode = draft.data_dir_mode.clone();
+                egui::ComboBox::from_id_salt("inst_dialog_datadir")
+                    .selected_text(RichText::new(selected).size(13.0).color(TEXT))
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut new_mode,
+                            crate::config::DataDirMode::Launcher,
+                            t.data_dir_launcher,
+                        );
+                        ui.selectable_value(
+                            &mut new_mode,
+                            crate::config::DataDirMode::Original,
+                            t.data_dir_original,
+                        );
+                        ui.selectable_value(
+                            &mut new_mode,
+                            crate::config::DataDirMode::Custom,
+                            t.data_dir_custom,
+                        );
+                    });
+                if new_mode != draft.data_dir_mode {
+                    draft.data_dir_mode = new_mode;
+                }
+            });
+            if draft.data_dir_mode == crate::config::DataDirMode::Custom {
+                ui.horizontal(|ui| {
+                    ui.label(t.data_dir_path_label);
+                    let path = draft.data_dir.get_or_insert_with(String::new);
+                    ui.add(
+                        egui::TextEdit::singleline(path).desired_width(180.0),
+                    );
+                    if ui.button(t.browse_folder).clicked() {
+                        if let Some(picked) = rfd::FileDialog::new()
+                            .set_title(t.browse_folder)
+                            .pick_folder()
+                        {
+                            draft.data_dir = Some(picked.to_string_lossy().into_owned());
+                        }
+                    }
+                    if ui.button(t.clear).clicked() {
+                        draft.data_dir = None;
+                    }
+                });
+            }
+            let root_show = {
+                let dummy = Instance::new(draft.name.clone());
+                let mut inst = dummy;
+                inst.data_dir_mode = draft.data_dir_mode.clone();
+                inst.data_dir = draft.data_dir.clone();
+                inst.data_root_for()
+            };
+            ui.label(
+                RichText::new(t.data_dir_current.replace("{}", &root_show.to_string_lossy()))
+                    .color(TEXT_WEAK)
+                    .size(10.5),
+            );
+            ui.label(
+                RichText::new(t.data_dir_hint)
+                    .color(TEXT_WEAK)
+                    .size(10.5),
+            );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button(t.save).clicked() {
@@ -2755,6 +2844,8 @@ device_code: None,
                 inst.authlib_url = draft.authlib_url.clone();
                 inst.game_dir_mode = draft.game_dir_mode.clone();
                 inst.game_dir = draft.game_dir.clone();
+                inst.data_dir_mode = draft.data_dir_mode.clone();
+                inst.data_dir = draft.data_dir.clone();
                 if was_active {
                     self.cfg.active_instance = Some(name);
                 }
@@ -2771,12 +2862,15 @@ device_code: None,
                 inst.authlib_url = draft.authlib_url;
                 inst.game_dir_mode = draft.game_dir_mode;
                 inst.game_dir = draft.game_dir;
+                inst.data_dir_mode = draft.data_dir_mode;
+                inst.data_dir = draft.data_dir;
                 let idx = self.cfg.instances.len();
                 self.cfg.instances.push(inst);
                 self.cfg.active_instance = Some(self.cfg.instances[idx].name.clone());
                 self.toast(ToastKind::Ok, t.instance_created);
             }
             let _ = save_config(&self.cfg);
+            self.refresh_active_root();
             // Success -> close the dialog.
             self.inst_dialog = None;
             return;
@@ -2886,7 +2980,7 @@ device_code: None,
         }
 
         if do_delete {
-            let dir = crate::install::version_dir(&self.root, &id);
+            let dir = crate::install::version_dir(&self.instance_root(), &id);
             if dir.exists() {
                 let _ = std::fs::remove_dir_all(&dir);
             }
@@ -3227,84 +3321,6 @@ device_code: None,
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                card(ui, |ui| {
-                    ui.label(RichText::new(t.data_dir_label).size(9.0).color(TEXT_WEAK));
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label(t.data_dir_choice);
-                        let mut mode = self.cfg.data_dir_mode.clone();
-                        egui::ComboBox::from_id_salt("data_dir_mode")
-                            .selected_text(RichText::new(match mode {
-                                crate::config::DataDirMode::Launcher => t.data_dir_launcher,
-                                crate::config::DataDirMode::Original => t.data_dir_original,
-                                crate::config::DataDirMode::Custom => t.data_dir_custom,
-                            }))
-                            .width(250.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut mode,
-                                    crate::config::DataDirMode::Launcher,
-                                    t.data_dir_launcher,
-                                );
-                                ui.selectable_value(
-                                    &mut mode,
-                                    crate::config::DataDirMode::Original,
-                                    t.data_dir_original,
-                                );
-                                ui.selectable_value(
-                                    &mut mode,
-                                    crate::config::DataDirMode::Custom,
-                                    t.data_dir_custom,
-                                );
-                            });
-                        if mode != self.cfg.data_dir_mode {
-                            self.cfg.data_dir_mode = mode;
-                            self.apply_data_root();
-                            let _ = save_config(&self.cfg);
-                            self.toast(ToastKind::Info, t.data_dir_changed);
-                        }
-                    });
-                    if self.cfg.data_dir_mode == crate::config::DataDirMode::Custom {
-                        ui.horizontal(|ui| {
-                            ui.label(t.data_dir_path_label);
-                            let path = self.cfg.data_dir.get_or_insert_with(String::new);
-                            ui.add(egui::TextEdit::singleline(path).desired_width(300.0));
-                        });
-                        ui.horizontal(|ui| {
-                            if ui.button(t.browse_folder).clicked() {
-                                let start = self
-                                    .cfg
-                                    .data_dir
-                                    .clone()
-                                    .filter(|p| !p.is_empty())
-                                    .map(PathBuf::from)
-                                    .unwrap_or_else(|| PathBuf::from("."));
-                                if let Some(picked) = rfd::FileDialog::new()
-                                    .set_title(t.browse_folder)
-                                    .set_directory(start)
-                                    .pick_folder()
-                                {
-                                    self.cfg.data_dir = Some(picked.to_string_lossy().into_owned());
-                                    self.cfg.data_dir_mode = crate::config::DataDirMode::Custom;
-                                    self.apply_data_root();
-                                    let _ = save_config(&self.cfg);
-                                    self.toast(ToastKind::Info, t.data_dir_changed);
-                                }
-                            }
-                        });
-                    }
-                    ui.label(RichText::new(t.data_dir_hint).color(TEXT_WEAK).size(10.5));
-                    ui.label(
-                        RichText::new(
-                            t.data_dir_current.replace("{}", &self.root.to_string_lossy()),
-                        )
-                        .color(TEXT_WEAK)
-                        .size(10.5),
-                    );
-                });
-
-                ui.add_space(8.0);
-
                 card(ui, |ui| {
                     ui.label(RichText::new(t.vanilla_branding_label).size(9.0).color(TEXT_WEAK));
                     ui.add_space(4.0);

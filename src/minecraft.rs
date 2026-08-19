@@ -42,11 +42,14 @@ impl VersionManifest {
 }
 
 /// Client mod / loader families the launcher can install on top of a vanilla
-/// release: Fabric (meta.fabricmc.net) and Quilt (meta.quiltmc.org).
+/// release: Fabric (meta.fabricmc.net), Quilt (meta.quiltmc.org) and Forge
+/// (maven.minecraftforge.net). The complete per-version lists come from the
+/// scraped client-mod catalog (see tools/scrape-mod-catalog.ps1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoaderKind {
     Fabric,
     Quilt,
+    Forge,
 }
 
 impl LoaderKind {
@@ -54,6 +57,36 @@ impl LoaderKind {
         match self {
             LoaderKind::Fabric => "https://meta.fabricmc.net/v2",
             LoaderKind::Quilt => "https://meta.quiltmc.org/v3",
+            LoaderKind::Forge => "https://maven.minecraftforge.net",
+        }
+    }
+
+    /// URL of the loader profile JSON for (mc, loader).
+    pub fn profile_url(&self, mc: &str, loader: &str) -> String {
+        match self {
+            LoaderKind::Fabric | LoaderKind::Quilt => format!(
+                "{}/versions/loader/{}/{}/profile/json",
+                self.base_url(),
+                mc,
+                loader
+            ),
+            LoaderKind::Forge => format!(
+                "{}/net/minecraftforge/forge/{}-{}/forge-{}-{}.json",
+                self.base_url(),
+                mc,
+                loader,
+                mc,
+                loader
+            ),
+        }
+    }
+
+    /// Version id installed in the versions folder for (mc, loader).
+    pub fn version_id(&self, mc: &str, loader: &str) -> String {
+        match self {
+            LoaderKind::Fabric => format!("fabric-loader-{}-{}", loader, mc),
+            LoaderKind::Quilt => format!("quilt-loader-{}-{}", loader, mc),
+            LoaderKind::Forge => format!("{}-{}", mc, loader),
         }
     }
 }
@@ -92,6 +125,106 @@ pub fn fetch_loader_list(
         sb.cmp(&sa)
             .then_with(|| crate::util::cmp_version(&b.version, &a.version))
     });
+    Ok(metas)
+}
+
+/// Full scraped client-mod catalog (all Fabric/Quilt/Forge versions), built by
+/// tools/scrape-mod-catalog.ps1 and hosted next to the launcher releases.
+/// The launcher reads it first and falls back to the live metadata endpoints.
+#[derive(Debug, Deserialize)]
+pub struct LoaderCatalog {
+    pub versions: std::collections::HashMap<String, LoaderFamilyCatalog>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoaderFamilyCatalog {
+    #[serde(default)]
+    pub loaders: std::collections::HashMap<String, Vec<String>>,
+}
+
+const MOD_CATALOG_URL: &str =
+    "https://stievenw.github.io/HanaLauncher-portal/client-mod-catalog.json";
+
+/// Loader lists (fabric, quilt, forge) for a Minecraft version, newest first.
+/// Prefers the scraped catalog; falls back to the live metadata endpoints.
+pub fn fetch_loader_lists(
+    client: &reqwest::blocking::Client,
+    mc: &str,
+) -> Result<(Vec<LoaderMeta>, Vec<LoaderMeta>, Vec<LoaderMeta>)> {
+    if let Ok(cat) = fetch_catalog(client) {
+        if let Some((f, q, g)) = catalog_lists(&cat, mc) {
+            return Ok((f, q, g));
+        }
+    }
+    let fabric = fetch_loader_list(client, LoaderKind::Fabric, mc)?;
+    let quilt = fetch_loader_list(client, LoaderKind::Quilt, mc)?;
+    let forge = fetch_forge_list(client, mc)?;
+    Ok((fabric, quilt, forge))
+}
+
+fn fetch_catalog(client: &reqwest::blocking::Client) -> Result<LoaderCatalog> {
+    let text = client
+        .get(MOD_CATALOG_URL)
+        .send()
+        .context(crate::lang::current().failed_fetch_loaders)?
+        .text()
+        .context(crate::lang::current().failed_read_versions)?;
+    serde_json::from_str(&text).context(crate::lang::current().failed_fetch_loaders)
+}
+
+fn catalog_lists(
+    cat: &LoaderCatalog,
+    mc: &str,
+) -> Option<(Vec<LoaderMeta>, Vec<LoaderMeta>, Vec<LoaderMeta>)> {
+    let fam = |name: &str| {
+        cat.versions
+            .get(name)
+            .and_then(|f| f.loaders.get(mc))
+            .map(|versions| {
+                let mut metas: Vec<LoaderMeta> = versions
+                    .iter()
+                    .map(|v| LoaderMeta {
+                        version: v.clone(),
+                        stable: Some(!v.contains("beta")),
+                    })
+                    .collect();
+                metas.sort_by(|a, b| crate::util::cmp_version(&b.version, &a.version));
+                metas
+            })
+    };
+    let fabric = fam("fabric")?;
+    let quilt = fam("quilt").unwrap_or_default();
+    let forge = fam("forge").unwrap_or_default();
+    Some((fabric, quilt, forge))
+}
+
+/// Forge loader list for a Minecraft version, parsed from the Maven
+/// maven-metadata.xml (entries look like "1.21.1-52.0.1").
+pub fn fetch_forge_list(
+    client: &reqwest::blocking::Client,
+    mc: &str,
+) -> Result<Vec<LoaderMeta>> {
+    let url = format!(
+        "{}/net/minecraftforge/forge/maven-metadata.xml",
+        LoaderKind::Forge.base_url()
+    );
+    let text = client
+        .get(&url)
+        .send()
+        .context(crate::lang::current().failed_fetch_loaders)?
+        .text()
+        .context(crate::lang::current().failed_read_versions)?;
+    let mut metas = Vec::new();
+    for cap in text.split("<version>").skip(1) {
+        let version = cap.split("</version>").next().unwrap_or("");
+        if let Some(build) = version.strip_prefix(&format!("{mc}-")) {
+            metas.push(LoaderMeta {
+                version: build.to_string(),
+                stable: Some(true),
+            });
+        }
+    }
+    metas.sort_by(|a, b| crate::util::cmp_version(&b.version, &a.version));
     Ok(metas)
 }
 

@@ -221,8 +221,9 @@ pub fn load_or_fetch_version(client: &Client, root: &Path, id: &str) -> Result<V
     Ok(version)
 }
 
-/// Download a Fabric/Quilt loader profile JSON into the local versions folder
-/// and return the version id it declares (e.g. `fabric-loader-0.16.14-1.21.4`).
+/// Download a Fabric/Quilt/Forge loader profile JSON into the local versions
+/// folder and return the version id it declares (e.g.
+/// `fabric-loader-0.16.14-1.21.4` or `1.21.1-52.0.1`).
 pub fn fetch_loader_profile(
     client: &Client,
     root: &Path,
@@ -230,12 +231,7 @@ pub fn fetch_loader_profile(
     mc: &str,
     loader: &str,
 ) -> Result<String> {
-    let url = format!(
-        "{}/versions/loader/{}/{}/profile/json",
-        kind.base_url(),
-        mc,
-        loader
-    );
+    let url = kind.profile_url(mc, loader);
     let bytes = download_bytes(client, &url)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .context("Profil loader tidak valid (JSON tidak dikenal)")?;

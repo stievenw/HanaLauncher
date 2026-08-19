@@ -99,6 +99,10 @@ pub struct Instance {
     pub game_dir_mode: GameDirMode,
     #[serde(default)]
     pub game_dir: Option<String>,
+    #[serde(default)]
+    pub data_dir_mode: DataDirMode,
+    #[serde(default)]
+    pub data_dir: Option<String>,
 }
 
 impl Instance {
@@ -116,6 +120,8 @@ impl Instance {
             authlib_url: "ely.by".to_string(),
             game_dir_mode: GameDirMode::Launcher,
             game_dir: None,
+            data_dir_mode: DataDirMode::Launcher,
+            data_dir: None,
         }
     }
 
@@ -156,6 +162,24 @@ impl Instance {
                 .as_deref()
                 .map(|p| !p.is_empty())
                 .unwrap_or(false)
+    }
+
+    /// The folder that holds versions/, libraries/, assets/ and runtime/ for
+    /// THIS instance. Set per instance in the Manage Instance dialog; the
+    /// game folder (saves, servers, mods) is separate and never follows it.
+    pub fn data_root_for(&self) -> PathBuf {
+        let launcher_fallback = || minecraft_root().unwrap_or_else(|_| PathBuf::from("."));
+        match self.data_dir_mode {
+            DataDirMode::Launcher => launcher_fallback(),
+            DataDirMode::Original => writable_dir(original_minecraft_dir()),
+            DataDirMode::Custom => self
+                .data_dir
+                .as_deref()
+                .map(PathBuf::from)
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(writable_dir)
+                .unwrap_or_else(launcher_fallback),
+        }
     }
 }
 
@@ -207,12 +231,6 @@ pub struct Config {
     #[serde(default)]
     pub font_mode: FontMode,
 
-    // Where the launcher data (versions, libraries, assets, runtime) lives.
-    #[serde(default)]
-    pub data_dir_mode: DataDirMode,
-    #[serde(default)]
-    pub data_dir: Option<String>,
-
     // When true the game is told the launcher is a vanilla one
     // (tlauncher.bootstrap.brand/channel = "vanilla") instead of the
     // brand/channel given via --brand / --channel.
@@ -258,8 +276,6 @@ impl Default for Config {
             default_download_java: default_dl_java(),
             language: default_lang(),
             font_mode: FontMode::Monogram,
-            data_dir_mode: DataDirMode::Launcher,
-            data_dir: None,
             vanilla_branding: false,
         }
     }
@@ -341,26 +357,11 @@ impl Config {
         }
     }
 
-    /// The folder that holds versions/, libraries/, assets/ and runtime/.
-    /// Selected in Settings ("Launcher" / ".minecraft original" / custom).
-    /// Falls back to the portable launcher root when the chosen folder is not
-    /// writable. The per-instance game folder (saves, servers, mods) is
-    /// separate and never follows this setting.
-    pub fn data_root_for(&self) -> PathBuf {
-        let launcher_fallback = || {
-            minecraft_root().unwrap_or_else(|_| PathBuf::from("."))
-        };
-        match self.data_dir_mode {
-            DataDirMode::Launcher => launcher_fallback(),
-            DataDirMode::Original => writable_dir(original_minecraft_dir()),
-            DataDirMode::Custom => self
-                .data_dir
-                .as_deref()
-                .map(PathBuf::from)
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(writable_dir)
-                .unwrap_or_else(launcher_fallback),
-        }
+    /// The launcher's own data root (the folder next to the exe, or AppData
+    /// when the exe folder is not writable). Used for launcher-wide data
+    /// (logs) and as the default for instances that use "Launcher" mode.
+    pub fn launcher_root() -> PathBuf {
+        minecraft_root().unwrap_or_else(|_| PathBuf::from("."))
     }
 }
 
@@ -444,6 +445,7 @@ pub fn load_config() -> Config {
         Err(_) => Config::default(),
     };
     cfg.migrate(legacy.as_ref());
+    cfg.migrate_data_dir(legacy.as_ref());
     cfg.ensure_latest();
     cfg.normalize_active_instance();
     let _ = save_config(&cfg);
@@ -487,6 +489,29 @@ impl Config {
         self.instances = vec![inst];
         self.active_instance = Some("Bawaan".to_string());
         let _ = save_config(self);
+    }
+
+    /// Port the old global data-folder setting (Settings) onto every instance,
+    /// because the data folder is now configured per instance.
+    fn migrate_data_dir(&mut self, legacy: Option<&serde_json::Value>) {
+        let Some(legacy) = legacy else {
+            return;
+        };
+        let Some(mode) = legacy.get("data_dir_mode").and_then(|v| v.as_str()) else {
+            return;
+        };
+        let mode = match mode {
+            "original" => DataDirMode::Original,
+            "custom" => DataDirMode::Custom,
+            _ => return,
+        };
+        let dir = legacy.get("data_dir").and_then(|v| v.as_str()).map(str::to_string);
+        for inst in &mut self.instances {
+            if inst.data_dir_mode == DataDirMode::Launcher && inst.data_dir.is_none() {
+                inst.data_dir_mode = mode.clone();
+                inst.data_dir = dir.clone();
+            }
+        }
     }
 }
 

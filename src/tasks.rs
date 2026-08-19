@@ -89,20 +89,18 @@ pub fn repair_version(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>
     });
 }
 
-/// Fetch the Fabric and Quilt loader lists for a Minecraft version.
+/// Fetch the Fabric, Quilt and Forge loader lists for a Minecraft version
+/// (from the scraped catalog, falling back to the live metadata endpoints).
 pub fn refresh_loaders(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>, mc: String) {
     spawn_tx(tx, decisions, "loaders", move |ctx| {
-        let fabric = crate::minecraft::fetch_loader_list(
-            &ctx.client,
-            crate::minecraft::LoaderKind::Fabric,
-            &mc,
-        )?;
-        let quilt = crate::minecraft::fetch_loader_list(
-            &ctx.client,
-            crate::minecraft::LoaderKind::Quilt,
-            &mc,
-        )?;
-        let _ = ctx.tx.send(TaskEvent::Loaders { mc, fabric, quilt });
+        let (fabric, quilt, forge) =
+            crate::minecraft::fetch_loader_lists(&ctx.client, &mc)?;
+        let _ = ctx.tx.send(TaskEvent::Loaders {
+            mc,
+            fabric,
+            quilt,
+            forge,
+        });
         Ok(())
     });
 }
