@@ -5,7 +5,7 @@
 #   4. compiles the Burn bundle (HanaLauncherBundle.wxs) -> HanaLauncherSetup.exe
 #   5. (optional) Authenticode-signs the exe + MSI + setup (uses
 #      setup\signing\StievenW.pfx automatically, or $env:CODE_SIGN_THUMBPRINT)
-#   6. writes setup\HanaLauncher-hashes.txt (SHA256/SHA1 of every shipped file)
+#   6. writes setup\HanaLauncher-hashes.txt (SHA256 of every shipped file)
 #
 # Uses the WiX 3.14 toolset bundled in the "Avatar Online TeaMobi" project
 # (candle.exe + light.exe). Override with:  $env:WIX_BIN = "C:\...\bin"
@@ -49,6 +49,21 @@ $env:PATH = "$wixBin;$env:PATH"
 
 Push-Location $setupDir
 
+# Real-time AV briefly locks freshly written files (e.g. the extracted Burn
+# engine). Wait until the file is no longer held before touching it.
+function Wait-FileUnlocked([string]$path, [int]$maxSeconds = 30) {
+    for ($i = 0; $i -lt $maxSeconds; $i++) {
+        try {
+            $fs = [System.IO.File]::Open($path, 'Open', 'ReadWrite', 'None')
+            $fs.Close()
+            return
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    throw "File masih terkunci oleh proses lain: $path"
+}
+
 # ---- Optional Authenticode signing setup ----
 # Priority:
 #   1. setup\ca\codesign.pfx   - code-signing cert issued by the private
@@ -89,21 +104,6 @@ if ($usePfx -or $env:CODE_SIGN_THUMBPRINT) {
         Sort-Object FullName -Descending | Select-Object -First 1
     if (-not $signtool) { throw "signtool.exe not found (Windows SDK)" }
 
-    # Real-time AV briefly locks freshly written files (e.g. the extracted
-    # Burn engine). Wait until the file is no longer held before signing.
-    function Wait-FileUnlocked([string]$path, [int]$maxSeconds = 30) {
-        for ($i = 0; $i -lt $maxSeconds; $i++) {
-            try {
-                $fs = [System.IO.File]::Open($path, 'Open', 'ReadWrite', 'None')
-                $fs.Close()
-                return
-            } catch {
-                Start-Sleep -Milliseconds 500
-            }
-        }
-        throw "File masih terkunci oleh proses lain: $path"
-    }
-
     function Sign-File([string]$path) {
         Wait-FileUnlocked $path
         if ($usePfx) {
@@ -122,9 +122,8 @@ if ($usePfx -or $env:CODE_SIGN_THUMBPRINT) {
     }
 
     # Sign the launcher exe BEFORE compiling the MSI so the file embedded in
-    # the MSI is the signed one. Otherwise the installed exe ends up unsigned
-    # (the MSI is built first and only the standalone release exe gets signed).
-    # The Uninstall.exe embedded in the install root is signed the same way.
+    # the MSI is the signed one. The Uninstall.exe embedded in the install root
+    # is signed the same way.
     Write-Host "== 4/6 Signing exe + Compiling MSI + Bundle =="
     Sign-File $release
     Sign-File $uninstall

@@ -63,15 +63,17 @@ fn main() {
         .args(["/x", PRODUCT_CODE, "/norestart"])
         .status();
 
-    // 5. delete the install folder (incl. this exe). This process must exit
-    //    first to unlock the exe, so the deletion runs detached with a delay.
-    //    `ping` is used for the wait because `timeout` needs a console.
-    let dir = install_dir.to_string_lossy().replace('"', "^\"");
-    let cmd = format!(
-        "ping -n 5 127.0.0.1 >nul & cd /d %TEMP% & rd /s /q \"{dir}\""
-    );
-    let _ = Command::new("cmd")
-        .args(["/c", cmd.as_str()])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
+    // 5. remove only the launcher's own program files. The install folder is
+    //    the user's global .minecraft folder (the setup default) and must be
+    //    preserved completely - saves, worlds, mods, versions, libraries,
+    //    assets, runtime and everything else inside it survive uninstall.
+    for name in ["HanaLauncher.exe", "Uninstall.exe"] {
+        let _ = std::fs::remove_file(install_dir.join(name));
+    }
+    if let Ok(rd) = std::fs::read_dir(install_dir.join("resources")) {
+        for e in rd.flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+        let _ = std::fs::remove_dir(install_dir.join("resources"));
+    }
 }

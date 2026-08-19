@@ -5,7 +5,7 @@ use std::path::Path;
 use sha1::{Digest, Sha1};
 
 pub const LAUNCHER_NAME: &str = "HanaLauncher";
-pub const LAUNCHER_VERSION: &str = "1.0.5";
+pub const LAUNCHER_VERSION: &str = "1.0.6";
 
 /// Default launcher brand (Legacy Launcher style), overridable via `--brand`.
 pub const DEFAULT_BRAND: &str = "hana";

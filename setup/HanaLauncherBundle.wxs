@@ -1,7 +1,7 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <!--
   Hana Launcher - Burn bootstrapper. Produces the single-file setup EXE that
-  wraps the MSI (HanaLauncher.wxs) and shows a native install wizard.
+  wraps the MSI (HanaLauncher.wxs) and shows the standard install wizard.
 
   Build: see build-setup.ps1. The bundle uses its own UpgradeCode, so running
   a newer setup EXE over an older install upgrades in place.
@@ -10,7 +10,7 @@
      xmlns:bal="http://schemas.microsoft.com/wix/BalExtension">
 
   <Bundle Name="Hana Launcher"
-          Version="1.0.5"
+          Version="1.0.6"
           Manufacturer="StievenW"
           UpgradeCode="AB403C0C-D365-4812-B5DE-0060465FB5AC"
           IconSourceFile="..\assets\icon.ico">

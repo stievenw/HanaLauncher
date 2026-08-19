@@ -281,15 +281,17 @@ impl Config {
     }
 
     /// The global Launcher Directory (versions/libraries/assets/runtime +
-    /// saves/mods). `None` (or an empty path) resolves to the original
-    /// `~/.minecraft` folder, exactly like the official Minecraft launcher.
+    /// saves/mods). Defaults to the folder next to the executable - the setup
+    /// installs into `%APPDATA%\.minecraft` by default, so launcher data
+    /// follows the chosen install location. A configured `launcher_directory`
+    /// (from older setups) still wins when present.
     pub fn launcher_dir(&self) -> PathBuf {
         self.launcher_directory
             .as_deref()
             .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
             .map(writable_dir)
-            .unwrap_or_else(original_minecraft_dir)
+            .unwrap_or_else(|| minecraft_root().unwrap_or_else(|_| original_minecraft_dir()))
     }
 }
 
