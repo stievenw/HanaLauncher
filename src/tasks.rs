@@ -72,6 +72,23 @@ pub fn install_version(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision
     });
 }
 
+/// Verify an installed version and re-download only the files that are missing
+/// or corrupt. Nothing is wiped first - `install_version` skips every file
+/// whose checksum already matches.
+pub fn repair_version(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>, version_id: String, root: PathBuf) {
+    spawn_tx(tx, decisions, "repair", move |ctx| {
+        let lang = crate::lang::current();
+        let version = crate::install::resolve_version(&ctx.client, &root, &version_id)?;
+        if crate::install::verify_version_installed(&root, &version) {
+            ctx.reporter.log(lang.repair_ok);
+            return Ok(());
+        }
+        ctx.reporter.log(lang.repairing);
+        crate::install::install_version(&ctx.client, &root, &version_id, &ctx.reporter)?;
+        Ok(())
+    });
+}
+
 /// Fetch the Fabric and Quilt loader lists for a Minecraft version.
 pub fn refresh_loaders(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>, mc: String) {
     spawn_tx(tx, decisions, "loaders", move |ctx| {

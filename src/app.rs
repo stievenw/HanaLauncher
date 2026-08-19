@@ -259,6 +259,7 @@ fn format_time_left(secs: i64, t: &crate::lang::Lang) -> String {
 enum VersionAction {
     Select(String),
     Install(String),
+    Repair(String),
     DeleteData(String),
 }
 
@@ -442,6 +443,7 @@ pub struct HanaApp {
 
     inst_dialog: Option<InstDraft>,
     delete_dialog: Option<DeleteDraft>,
+    version_delete_confirm: Option<String>,
     warn_existing: bool,
 
     version_choice: Option<(String, String)>,
@@ -594,6 +596,7 @@ device_code: None,
 
             inst_dialog: None,
             delete_dialog: None,
+            version_delete_confirm: None,
             warn_existing,
             version_choice: None,
             decision_tx: None,
@@ -2059,6 +2062,15 @@ device_code: None,
                                             {
                                                 action = Some(VersionAction::Select(v.id.clone()));
                                             }
+                                            if ui
+                                                .add_enabled(
+                                                    !self.task_active,
+                                                    egui::Button::new(t.check_repair),
+                                                )
+                                                .clicked()
+                                            {
+                                                action = Some(VersionAction::Repair(v.id.clone()));
+                                            }
                                         } else if ui
                                             .add_enabled(
                                                 !self.task_active,
@@ -2202,16 +2214,17 @@ device_code: None,
                     let root = self.root.clone();
                     self.start(move |tx, drx| crate::tasks::install_version(tx, drx, id, root));
                 }
+                VersionAction::Repair(id) => {
+                    let root = self.root.clone();
+                    self.start(move |tx, drx| crate::tasks::repair_version(tx, drx, id, root));
+                }
                 VersionAction::DeleteData(id) => {
-                    let dir = crate::install::version_dir(&self.root, &id);
-                    if dir.exists() {
-                        let _ = std::fs::remove_dir_all(&dir);
-                    }
-                    self.refresh_installed();
-                    self.toast(ToastKind::Ok, t.version_deleted);
+                    self.version_delete_confirm = Some(id);
                 }
             }
         }
+
+        self.ui_version_delete_dialog(ui);
     }
 
     fn ui_versions_downloaded(&mut self, ui: &mut egui::Ui) {
@@ -2260,6 +2273,15 @@ device_code: None,
                                         if ui
                                             .add_enabled(
                                                 !self.task_active,
+                                                egui::Button::new(t.check_repair),
+                                            )
+                                            .clicked()
+                                        {
+                                            action = Some(VersionAction::Repair(id.clone()));
+                                        }
+                                        if ui
+                                            .add_enabled(
+                                                !self.task_active,
                                                 egui::Button::new(t.delete_data),
                                             )
                                             .clicked()
@@ -2275,17 +2297,18 @@ device_code: None,
             });
         if let Some(action) = action {
             match action {
+                VersionAction::Repair(id) => {
+                    let root = self.root.clone();
+                    self.start(move |tx, drx| crate::tasks::repair_version(tx, drx, id, root));
+                }
                 VersionAction::DeleteData(id) => {
-                    let dir = crate::install::version_dir(&self.root, &id);
-                    if dir.exists() {
-                        let _ = std::fs::remove_dir_all(&dir);
-                    }
-                    self.refresh_installed();
-                    self.toast(ToastKind::Ok, t.version_deleted);
+                    self.version_delete_confirm = Some(id);
                 }
                 _ => {}
             }
         }
+
+        self.ui_version_delete_dialog(ui);
     }
 
     fn ui_instances(&mut self, ui: &mut egui::Ui) {
@@ -2322,7 +2345,6 @@ device_code: None,
             let mut select_idx: Option<usize> = None;
             let mut edit_idx: Option<usize> = None;
             let mut delete_idx: Option<usize> = None;
-            let mut delete_data: Option<String> = None;
             let mut open_folder_idx: Option<usize> = None;
 
             egui::ScrollArea::vertical()
@@ -2401,15 +2423,9 @@ device_code: None,
                                                 open_folder_idx = Some(i);
                                             }
                                             if inst.is_latest {
-                                                if ui
-                                                    .add_enabled(
-                                                        !busy,
-                                                        egui::Button::new(t.delete_data),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    delete_data = Some(ver.clone());
-                                                }
+                                                // The built-in "latest" instance is
+                                                // managed automatically; it offers no
+                                                // delete / delete-data button.
                                             } else if ui
                                                 .add_enabled(
                                                     !busy,
@@ -2463,18 +2479,6 @@ device_code: None,
                     also_folder: false,
                     deletable: inst.game_dir_deletable(),
                 });
-            }
-            if let Some(id) = delete_data {
-                if id == "-" {
-                    self.toast(ToastKind::Info, t.version_unavailable);
-                } else {
-                    let dir = crate::install::version_dir(&self.root, &id);
-                    if dir.exists() {
-                        let _ = std::fs::remove_dir_all(&dir);
-                    }
-                    self.refresh_installed();
-                    self.toast(ToastKind::Ok, t.version_deleted);
-                }
             }
             if let Some(idx) = open_folder_idx {
                 let inst = &self.cfg.instances[idx];
@@ -2847,6 +2851,49 @@ device_code: None,
             self.delete_dialog = None;
         } else {
             self.delete_dialog = Some(draft);
+        }
+    }
+
+    /// Confirmation dialog before permanently deleting a version's data.
+    fn ui_version_delete_dialog(&mut self, ui: &mut egui::Ui) {
+        let t = self.cfg.t();
+        let Some(id) = self.version_delete_confirm.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut do_delete = false;
+        let ctx = ui.ctx().clone();
+
+        let modal = egui::Modal::new(egui::Id::new("version_delete_modal")).show(&ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(RichText::new(t.version_delete_title).size(15.0).strong());
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(t.version_delete_body.replace("{}", &id)).size(12.5),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button(t.delete).clicked() {
+                    do_delete = true;
+                }
+                if ui.button(t.cancel).clicked() {
+                    open = false;
+                }
+            });
+        });
+        if modal.should_close() {
+            open = false;
+        }
+
+        if do_delete {
+            let dir = crate::install::version_dir(&self.root, &id);
+            if dir.exists() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            self.refresh_installed();
+            self.toast(ToastKind::Ok, t.version_deleted);
+        } else if open {
+            self.version_delete_confirm = Some(id);
         }
     }
 

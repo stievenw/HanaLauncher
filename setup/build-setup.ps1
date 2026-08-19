@@ -48,18 +48,8 @@ $env:PATH = "$wixBin;$env:PATH"
 
 Push-Location $setupDir
 
-Write-Host "== 4/6 Compiling MSI + Bundle =="
-& candle.exe HanaLauncher.wxs -arch x64 -ext WixUIExtension.dll -out HanaLauncher.wixobj
-if ($LASTEXITCODE -ne 0) { throw "candle (MSI) failed" }
-& light.exe HanaLauncher.wixobj -ext WixUIExtension.dll -spdb -out HanaLauncher.msi
-if ($LASTEXITCODE -ne 0) { throw "light (MSI) failed" }
-
-& candle.exe HanaLauncherBundle.wxs -arch x64 -ext WixBalExtension.dll -out HanaLauncherBundle.wixobj
-if ($LASTEXITCODE -ne 0) { throw "candle (bundle) failed" }
-& light.exe HanaLauncherBundle.wixobj -ext WixBalExtension.dll -spdb -out HanaLauncherSetup.exe
-if ($LASTEXITCODE -ne 0) { throw "light (bundle) failed" }
-
-# Optional Authenticode signing. Priority:
+# ---- Optional Authenticode signing setup ----
+# Priority:
 #   1. setup\ca\codesign.pfx   - code-signing cert issued by the private
 #      HanaLauncher CA (make-private-ca.ps1). The publisher is only "trusted"
 #      on machines where setup\ca\rootCA.crt is installed into the Trusted Root
@@ -90,9 +80,9 @@ if ((Test-Path $caPfx) -and (Test-Path $caSecrets)) {
     Write-Host "Signing with self-signed cert (StievenW.pfx)"
 }
 $usePfx = $null -ne $pfx
+$signtool = $null
 
 if ($usePfx -or $env:CODE_SIGN_THUMBPRINT) {
-    Write-Host "== 5/6 Signing (Authenticode) =="
     $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" `
         -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
         Sort-Object FullName -Descending | Select-Object -First 1
@@ -130,11 +120,30 @@ if ($usePfx -or $env:CODE_SIGN_THUMBPRINT) {
         if ($LASTEXITCODE -ne 0) { throw "signing failed: $path" }
     }
 
-    # The plain launcher exe and the MSI are signed directly.
+    # Sign the launcher exe BEFORE compiling the MSI so the file embedded in
+    # the MSI is the signed one. Otherwise the installed exe ends up unsigned
+    # (the MSI is built first and only the standalone release exe gets signed).
+    Write-Host "== 4/6 Signing exe + Compiling MSI + Bundle =="
     Sign-File $release
+} else {
+    Write-Host "== 4/6 Compiling MSI + Bundle =="
+}
+
+& candle.exe HanaLauncher.wxs -arch x64 -ext WixUIExtension.dll -out HanaLauncher.wixobj
+if ($LASTEXITCODE -ne 0) { throw "candle (MSI) failed" }
+& light.exe HanaLauncher.wixobj -ext WixUIExtension.dll -spdb -out HanaLauncher.msi
+if ($LASTEXITCODE -ne 0) { throw "light (MSI) failed" }
+
+& candle.exe HanaLauncherBundle.wxs -arch x64 -ext WixBalExtension.dll -out HanaLauncherBundle.wixobj
+if ($LASTEXITCODE -ne 0) { throw "candle (bundle) failed" }
+& light.exe HanaLauncherBundle.wixobj -ext WixBalExtension.dll -spdb -out HanaLauncherSetup.exe
+if ($LASTEXITCODE -ne 0) { throw "light (bundle) failed" }
+
+# Sign the MSI directly and the Burn bundle via the insignia two-step (see
+# the comment above). The exe was already signed before the MSI was compiled.
+if ($signtool) {
     Sign-File $msi
 
-    # The Burn bundle needs the insignia two-step (see comment above).
     $engineTmp = Join-Path $setupDir "engine.exe"
     $bundleTmp = Join-Path $setupDir "HanaLauncherSetup.new.exe"
     & insignia.exe -ib $setup -o $engineTmp
