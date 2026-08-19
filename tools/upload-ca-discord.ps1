@@ -39,10 +39,13 @@ foreach ($f in $files) {
 }
 
 Write-Host "Mengunggah CA files ke Discord (private channel)..."
-$args = @("-s", "-f", "-X", "POST", $webhook,
-    "-F", "payload_json={\"content\":\"Hana Launcher CA - $(Split-Path $root -Leaf) - $(Get-Date -Format 'yyyy-MM-dd HH:mm')\"}")
+# Note: use a plain "content=" form field - payload_json gets mangled by
+# PowerShell -> curl.exe native argument quoting.
+$content = "Hana Launcher CA - HanaLauncher - " + (Get-Date -Format 'yyyy-MM-dd HH:mm')
+$args = @("-s", "-f", "-i", "-X", "POST", $webhook,
+    "-F", "content=$content")
 for ($i = 0; $i -lt $files.Count; $i++) {
-    $args += "-F"; $args += ("file{0}=@`"{1}`"" -f ($i + 1), $files[$i])
+    $args += "-F"; $args += ("file{0}=@{1}" -f ($i + 1), $files[$i])
 }
 & $curl @args
 if ($LASTEXITCODE -ne 0) { throw "Upload Discord gagal (exit $LASTEXITCODE)" }
