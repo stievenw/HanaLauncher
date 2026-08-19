@@ -349,8 +349,8 @@ fn launch_inner(ctx: &TaskCtx, req: &LaunchRequest, root: &PathBuf) -> Result<()
         &inst.extra_jvm_args,
         &inst.authlib_url,
         &authlib_jar,
-        &req.config.brand,
-        &req.config.channel,
+        &req.config.effective_brand(),
+        &req.config.effective_channel(),
     )?;
 
     ctx.reporter.log(lang.launch_args);

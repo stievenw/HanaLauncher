@@ -550,9 +550,7 @@ impl HanaApp {
         cfg.channel = channel;
         apply_font_mode(ctx, &cfg.font_mode);
 
-        let root = crate::config::minecraft_root().unwrap_or_else(|_| {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        });
+        let root = cfg.data_root_for();
         // Create the standard launcher folders right away so the install
         // directory looks like a normal launcher instead of an empty folder.
         for sub in ["versions", "libraries", "assets", "runtime", "logs"] {
@@ -758,6 +756,17 @@ device_code: None,
         }
         self.installed = set;
         self.scan_custom_versions();
+    }
+
+    /// Re-resolve the launcher data root after the user changed the data-folder
+    /// setting, recreate the standard folders and refresh what is installed.
+    fn apply_data_root(&mut self) {
+        self.root = self.cfg.data_root_for();
+        for sub in ["versions", "libraries", "assets", "runtime", "logs"] {
+            let _ = std::fs::create_dir_all(self.root.join(sub));
+        }
+        let _ = std::fs::create_dir_all(&self.root);
+        self.refresh_installed();
     }
 
     /// Find custom clients (modded / client-mod versions) that live in the
@@ -1411,7 +1420,11 @@ device_code: None,
                                 egui::ProgressBar::new(frac)
                                     .desired_width(240.0)
                                     .show_percentage()
-                                    .text(format!("{current}/{total}")),
+                                    .text(format!(
+                                        "{} / {}",
+                                        crate::util::fmt_bytes(current),
+                                        crate::util::fmt_bytes(total)
+                                    )),
                             );
                         }
                     });
@@ -1894,8 +1907,10 @@ device_code: None,
                         ui.label(RichText::new(&acc.username).size(15.0).strong());
                         let ty = if acc.account_type == crate::config::ACCOUNT_TYPE_ELY_OAUTH {
                             t.ely_oauth
-                        } else {
+                        } else if acc.account_type == crate::config::ACCOUNT_TYPE_ELY_PASSWORD {
                             t.ely_password
+                        } else {
+                            t.offline_account
                         };
                         ui.label(RichText::new(ty).size(11.0).color(TEXT_WEAK));
                     });
@@ -2366,7 +2381,7 @@ device_code: None,
                                         };
                                         ui.label(
                                             RichText::new(format!(
-                                                "{ver}  â€¢  {status}  â€¢  {} MB",
+                                                "{ver}  -  {status}  -  {} MB",
                                                 inst.memory_mb
                                             ))
                                             .color(TEXT_WEAK)
@@ -3165,6 +3180,103 @@ device_code: None,
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                card(ui, |ui| {
+                    ui.label(RichText::new(t.data_dir_label).size(9.0).color(TEXT_WEAK));
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(t.data_dir_choice);
+                        let mut mode = self.cfg.data_dir_mode.clone();
+                        egui::ComboBox::from_id_salt("data_dir_mode")
+                            .selected_text(RichText::new(match mode {
+                                crate::config::DataDirMode::Launcher => t.data_dir_launcher,
+                                crate::config::DataDirMode::Original => t.data_dir_original,
+                                crate::config::DataDirMode::Custom => t.data_dir_custom,
+                            }))
+                            .width(250.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut mode,
+                                    crate::config::DataDirMode::Launcher,
+                                    t.data_dir_launcher,
+                                );
+                                ui.selectable_value(
+                                    &mut mode,
+                                    crate::config::DataDirMode::Original,
+                                    t.data_dir_original,
+                                );
+                                ui.selectable_value(
+                                    &mut mode,
+                                    crate::config::DataDirMode::Custom,
+                                    t.data_dir_custom,
+                                );
+                            });
+                        if mode != self.cfg.data_dir_mode {
+                            self.cfg.data_dir_mode = mode;
+                            self.apply_data_root();
+                            let _ = save_config(&self.cfg);
+                            self.toast(ToastKind::Info, t.data_dir_changed);
+                        }
+                    });
+                    if self.cfg.data_dir_mode == crate::config::DataDirMode::Custom {
+                        ui.horizontal(|ui| {
+                            ui.label(t.data_dir_path_label);
+                            let path = self.cfg.data_dir.get_or_insert_with(String::new);
+                            ui.add(egui::TextEdit::singleline(path).desired_width(300.0));
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button(t.browse_folder).clicked() {
+                                let start = self
+                                    .cfg
+                                    .data_dir
+                                    .clone()
+                                    .filter(|p| !p.is_empty())
+                                    .map(PathBuf::from)
+                                    .unwrap_or_else(|| PathBuf::from("."));
+                                if let Some(picked) = rfd::FileDialog::new()
+                                    .set_title(t.browse_folder)
+                                    .set_directory(start)
+                                    .pick_folder()
+                                {
+                                    self.cfg.data_dir = Some(picked.to_string_lossy().into_owned());
+                                    self.cfg.data_dir_mode = crate::config::DataDirMode::Custom;
+                                    self.apply_data_root();
+                                    let _ = save_config(&self.cfg);
+                                    self.toast(ToastKind::Info, t.data_dir_changed);
+                                }
+                            }
+                        });
+                    }
+                    ui.label(RichText::new(t.data_dir_hint).color(TEXT_WEAK).size(10.5));
+                    ui.label(
+                        RichText::new(
+                            t.data_dir_current.replace("{}", &self.root.to_string_lossy()),
+                        )
+                        .color(TEXT_WEAK)
+                        .size(10.5),
+                    );
+                });
+
+                ui.add_space(8.0);
+
+                card(ui, |ui| {
+                    ui.label(RichText::new(t.vanilla_branding_label).size(9.0).color(TEXT_WEAK));
+                    ui.add_space(4.0);
+                    if ui
+                        .checkbox(&mut self.cfg.vanilla_branding, t.vanilla_branding_label)
+                        .changed()
+                    {
+                        let _ = save_config(&self.cfg);
+                        self.toast(ToastKind::Info, t.saved);
+                    }
+                    ui.label(
+                        RichText::new(t.vanilla_branding_hint)
+                            .color(TEXT_WEAK)
+                            .size(10.5),
+                    );
+                });
+
+                ui.add_space(8.0);
+
                 card(ui, |ui| {
                     ui.label(RichText::new(t.versions_label).size(9.0).color(TEXT_WEAK));
                 ui.add_space(4.0);

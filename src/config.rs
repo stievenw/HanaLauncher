@@ -55,6 +55,21 @@ pub enum GameDirMode {
     Custom,
 }
 
+/// Where the launcher keeps its Minecraft data (versions, libraries, assets,
+/// runtime). Independent from the per-instance game folder; selected in Settings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DataDirMode {
+    /// The launcher's own folder (next to the exe, portable layout).
+    #[default]
+    Launcher,
+    /// The original `~/.minecraft` used by the official Minecraft launcher.
+    /// On Windows that is `%APPDATA%\.minecraft` (Roaming), not Local.
+    Original,
+    /// A user-picked location.
+    Custom,
+}
+
 /// Which font is used to render the whole launcher UI.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -191,6 +206,18 @@ pub struct Config {
     // Which font is used to render the launcher UI.
     #[serde(default)]
     pub font_mode: FontMode,
+
+    // Where the launcher data (versions, libraries, assets, runtime) lives.
+    #[serde(default)]
+    pub data_dir_mode: DataDirMode,
+    #[serde(default)]
+    pub data_dir: Option<String>,
+
+    // When true the game is told the launcher is a vanilla one
+    // (tlauncher.bootstrap.brand/channel = "vanilla") instead of the
+    // brand/channel given via --brand / --channel.
+    #[serde(default)]
+    pub vanilla_branding: bool,
 }
 
 fn default_memory() -> u32 {
@@ -231,6 +258,9 @@ impl Default for Config {
             default_download_java: default_dl_java(),
             language: default_lang(),
             font_mode: FontMode::Monogram,
+            data_dir_mode: DataDirMode::Launcher,
+            data_dir: None,
+            vanilla_branding: false,
         }
     }
 }
@@ -291,6 +321,47 @@ impl Config {
     pub fn t(&self) -> &'static crate::lang::Lang {
         crate::lang::Lang::for_code(&self.language)
     }
+
+    /// Brand reported to the game (Legacy Launcher style). "vanilla" when the
+    /// user enabled vanilla branding in Settings.
+    pub fn effective_brand(&self) -> &str {
+        if self.vanilla_branding {
+            "vanilla"
+        } else {
+            &self.brand
+        }
+    }
+
+    /// Channel reported to the game; "vanilla" when vanilla branding is on.
+    pub fn effective_channel(&self) -> &str {
+        if self.vanilla_branding {
+            "vanilla"
+        } else {
+            &self.channel
+        }
+    }
+
+    /// The folder that holds versions/, libraries/, assets/ and runtime/.
+    /// Selected in Settings ("Launcher" / ".minecraft original" / custom).
+    /// Falls back to the portable launcher root when the chosen folder is not
+    /// writable. The per-instance game folder (saves, servers, mods) is
+    /// separate and never follows this setting.
+    pub fn data_root_for(&self) -> PathBuf {
+        let launcher_fallback = || {
+            minecraft_root().unwrap_or_else(|_| PathBuf::from("."))
+        };
+        match self.data_dir_mode {
+            DataDirMode::Launcher => launcher_fallback(),
+            DataDirMode::Original => writable_dir(original_minecraft_dir()),
+            DataDirMode::Custom => self
+                .data_dir
+                .as_deref()
+                .map(PathBuf::from)
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(writable_dir)
+                .unwrap_or_else(launcher_fallback),
+        }
+    }
 }
 
 pub fn data_root() -> anyhow::Result<PathBuf> {
@@ -321,6 +392,19 @@ pub fn minecraft_root() -> Result<PathBuf> {
         Ok(dir)
     } else {
         data_root()
+    }
+}
+
+/// Probe whether `dir` is writable. If it is not (e.g. a protected folder),
+/// fall back to the portable launcher root (or AppData) so version installs
+/// never fail with "Access is denied".
+fn writable_dir(dir: PathBuf) -> PathBuf {
+    let probe = dir.join(".hana-write-test");
+    if std::fs::write(&probe, b"").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        dir
+    } else {
+        minecraft_root().unwrap_or(dir)
     }
 }
 

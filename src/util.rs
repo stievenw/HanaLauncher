@@ -42,6 +42,24 @@ pub fn hex(data: &[u8]) -> String {
     data.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// Format a byte count into a human readable size (e.g. "295.9 MB").
+pub fn fmt_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else if value >= 100.0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 pub fn sha1_file(path: &Path) -> std::io::Result<String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
