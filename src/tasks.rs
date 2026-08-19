@@ -89,58 +89,6 @@ pub fn repair_version(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>
     });
 }
 
-/// Fetch the Fabric, Quilt and Forge loader lists for a Minecraft version
-/// (from the scraped catalog, falling back to the live metadata endpoints).
-pub fn refresh_loaders(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>, mc: String) {
-    spawn_tx(tx, decisions, "loaders", move |ctx| {
-        let (fabric, quilt, forge) =
-            crate::minecraft::fetch_loader_lists(&ctx.client, &mc)?;
-        let _ = ctx.tx.send(TaskEvent::Loaders {
-            mc,
-            fabric,
-            quilt,
-            forge,
-        });
-        Ok(())
-    });
-}
-
-/// Install a Fabric/Quilt loader profile on top of a vanilla version, or a
-/// Forge build via its official installer (Maven installer jar + --installClient).
-pub fn install_custom_client(
-    tx: Sender<TaskEvent>,
-    decisions: Receiver<LaunchDecision>,
-    kind: crate::minecraft::LoaderKind,
-    mc: String,
-    loader: String,
-    root: PathBuf,
-) {
-    spawn_tx(tx, decisions, "install-custom", move |ctx| {
-        let id = match kind {
-            crate::minecraft::LoaderKind::Fabric | crate::minecraft::LoaderKind::Quilt => {
-                let id =
-                    crate::install::fetch_loader_profile(&ctx.client, &root, kind, &mc, &loader)?;
-                crate::install::install_version(&ctx.client, &root, &id, &ctx.reporter)?;
-                id
-            }
-            crate::minecraft::LoaderKind::Forge => {
-                crate::install::install_version(&ctx.client, &root, &mc, &ctx.reporter)?;
-                let id = crate::install::install_forge_via_installer(
-                    &ctx.client,
-                    &root,
-                    &mc,
-                    &loader,
-                    &ctx.reporter,
-                )?;
-                crate::install::install_version(&ctx.client, &root, &id, &ctx.reporter)?;
-                id
-            }
-        };
-        let _ = ctx.tx.send(TaskEvent::Done(id));
-        Ok(())
-    });
-}
-
 pub fn login_oauth(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>) {
     spawn_tx(tx, decisions, "login-oauth", move |ctx| {
         let account = crate::auth::login_oauth_device(&ctx)?;
@@ -366,7 +314,7 @@ fn launch_inner(ctx: &TaskCtx, req: &LaunchRequest, root: &PathBuf) -> Result<()
 
     let authlib_jar = crate::install::ensure_authlib_injector(&ctx.client, root, &ctx.reporter)?;
 
-    let game_dir = inst.game_dir_for(root);
+    let game_dir = root.clone();
     let _ = std::fs::create_dir_all(&game_dir);
     ctx.reporter
         .log(format!("gameDir: {}", game_dir.to_string_lossy()));

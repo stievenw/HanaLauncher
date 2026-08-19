@@ -47,6 +47,7 @@ Write-Host ""
 Write-Host "================ VERIFIKASI TANDA TANGAN ================"
 $targets = @(
     (Join-Path $root "target\release\HanaLauncher.exe"),
+    (Join-Path $root "target\release\uninstall.exe"),
     (Join-Path $root "setup\HanaLauncher.msi"),
     (Join-Path $root "setup\HanaLauncherSetup.exe")
 )

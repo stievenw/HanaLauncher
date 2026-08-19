@@ -5,17 +5,25 @@
   Build: see build-setup.ps1. candle+light from tools-wix are used so the
   setup can be built without any extra software.
 
-  Upgrade flow: a fixed UpgradeCode + MajorUpgrade means installing a newer
-  setup over an older one replaces the program. Launcher data (versions,
-  libraries, assets, game saves, logs) lives next to the executable in the
-  install folder, so it survives updates as long as the folder is kept.
+  Upgrade flow: a fixed ProductCode + fixed UpgradeCode means installing a
+  newer setup over an older one replaces the program in place. Launcher data
+  (versions, libraries, assets, game saves, logs) lives next to the executable
+  in the install folder, so it survives updates as long as the folder is kept.
+
+  Uninstall flow: the MSI removes the program files and, via a deferred custom
+  action, wipes the user data folder (%APPDATA%\Hana\HanaLauncher - accounts,
+  settings and cache) so a reinstall starts completely clean. The cleanup only
+  runs on a full uninstall (REMOVE=ALL AND NOT UPGRADINGPRODUCTCODE) so an
+  upgrade never touches the user's data. An Uninstall.exe shipped in the
+  install folder also performs the full cleanup (standard Windows uninstall
+  wizard, wipe AppData + registry, msiexec /x, delete the install folder).
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
 
-  <Product Id="*"
+  <Product Id="B4A9D1C8-6E3F-4A2B-9C7E-5F0D8A1B2C3D"
            Name="Hana Launcher"
            Language="1033"
-           Version="1.0.3"
+           Version="1.0.4"
            Manufacturer="StievenW"
            UpgradeCode="3638E624-4ABC-49DB-9DD7-A1CC3B71E5EB">
 
@@ -38,6 +46,27 @@
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
     <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
     <UIRef Id="WixUI_InstallDir" />
+
+    <!-- User data folder (%APPDATA%\Hana\HanaLauncher) is wiped on a FULL
+         uninstall so a reinstall starts completely clean. The cleanup runs
+         deferred (as SYSTEM) and is guarded so an UPGRADE never touches the
+         user's data. -->
+    <CustomAction Id="SetRemoveDataCmd"
+                  Property="REMOVE_USER_DATA_CMD"
+                  Value="cmd /c rd /s /q &quot;[AppDataFolder]Hana\HanaLauncher&quot;" />
+    <CustomAction Id="RunRemoveData"
+                  BinaryKey="WixCA"
+                  DllEntry="CAQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="SetRemoveDataCmd"
+              Before="RunRemoveData">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RunRemoveData"
+              After="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
 
     <Feature Id="ProductFeature" Title="Hana Launcher" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
@@ -66,6 +95,22 @@
         <RegistryValue Root="HKCU"
                        Key="Software\Hana\HanaLauncher"
                        Name="exe"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+      <!-- One-click full uninstaller shipped in the install root: shows the
+           standard Windows Installer uninstall wizard, wipes
+           %APPDATA%\Hana\HanaLauncher + registry, and deletes the install
+           folder. -->
+      <Component Id="UninstallScript" Guid="3C9E7B21-5A4D-4F08-B6C2-8E1D0A9F4C55" Win64="yes">
+        <File Id="UninstallExe"
+              Name="Uninstall.exe"
+              Source="..\target\release\uninstall.exe" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\Hana\HanaLauncher"
+                       Name="uninstall_script"
                        Type="integer"
                        Value="1"
                        KeyPath="yes" />
@@ -117,6 +162,9 @@
       </Directory>
 
       <Component Id="RemoveInstallDirs" Guid="8657F0AC-1DC5-448F-A4E7-3A99C3EFAF66" Win64="yes">
+        <!-- RemoveFolder only removes empty folders; non-empty launcher data
+             (versions/, libraries/, ...) in the install root survives the MSI
+             uninstall and is cleaned by Uninstall.exe instead. -->
         <RemoveFolder Id="RemoveResourcesFolder"
                       Directory="RESOURCESDIR"
                       On="uninstall" />
@@ -169,6 +217,7 @@
 
     <ComponentGroup Id="ProductComponents">
       <ComponentRef Id="ProductExe" />
+      <ComponentRef Id="UninstallScript" />
       <ComponentRef Id="ResourceIcon" />
       <ComponentRef Id="ResourceBg" />
       <ComponentRef Id="ResourceFont" />

@@ -20,6 +20,7 @@ $ErrorActionPreference = "Continue"
 
 $root = Split-Path -Parent $PSScriptRoot
 $release = Join-Path $root "target\release\HanaLauncher.exe"
+$uninstall = Join-Path $root "target\release\uninstall.exe"
 $setupDir = $PSScriptRoot
 
 if (Get-Process -Name "HanaLauncher", "hana_launcher" -ErrorAction SilentlyContinue) {
@@ -123,15 +124,17 @@ if ($usePfx -or $env:CODE_SIGN_THUMBPRINT) {
     # Sign the launcher exe BEFORE compiling the MSI so the file embedded in
     # the MSI is the signed one. Otherwise the installed exe ends up unsigned
     # (the MSI is built first and only the standalone release exe gets signed).
+    # The Uninstall.exe embedded in the install root is signed the same way.
     Write-Host "== 4/6 Signing exe + Compiling MSI + Bundle =="
     Sign-File $release
+    Sign-File $uninstall
 } else {
     Write-Host "== 4/6 Compiling MSI + Bundle =="
 }
 
-& candle.exe HanaLauncher.wxs -arch x64 -ext WixUIExtension.dll -out HanaLauncher.wixobj
+& candle.exe HanaLauncher.wxs -arch x64 -ext WixUIExtension.dll -ext WixUtilExtension.dll -out HanaLauncher.wixobj
 if ($LASTEXITCODE -ne 0) { throw "candle (MSI) failed" }
-& light.exe HanaLauncher.wixobj -ext WixUIExtension.dll -spdb -out HanaLauncher.msi
+& light.exe HanaLauncher.wixobj -ext WixUIExtension.dll -ext WixUtilExtension.dll -spdb -out HanaLauncher.msi
 if ($LASTEXITCODE -ne 0) { throw "light (MSI) failed" }
 
 & candle.exe HanaLauncherBundle.wxs -arch x64 -ext WixBalExtension.dll -out HanaLauncherBundle.wixobj

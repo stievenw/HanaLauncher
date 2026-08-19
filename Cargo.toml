@@ -1,11 +1,17 @@
 ﻿[package]
 name = "hana_launcher"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2024"
 
 [[bin]]
 name = "HanaLauncher"
 path = "src/main.rs"
+
+# Standalone uninstaller embedded into the install root (see HanaLauncher.wxs).
+# Built as a separate tiny binary so the launcher itself stays dependency-light.
+[[bin]]
+name = "uninstall"
+path = "src/bin/uninstall.rs"
 
 # Shrink the shipped executable (keeps the launcher exe small; the heavy
 # assets live in the separate resources/ folder).

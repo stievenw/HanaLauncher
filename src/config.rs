@@ -1,5 +1,5 @@
 ﻿#![allow(dead_code)]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use directories::ProjectDirs;
@@ -39,35 +39,8 @@ impl Account {
 /// Key (name) reserved for the built-in "latest stable release" instance.
 pub const LATEST_INSTANCE_KEY: &str = "latest";
 
-/// Where a given instance stores its game files (saves, servers, mods, ...).
-/// The launcher data (versions, libraries, assets) always lives in the
-/// launcher root; this only selects the *game directory* the game is run in.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum GameDirMode {
-    /// The launcher's own Minecraft folder (used today).
-    #[default]
-    Launcher,
-    /// The original `~/.minecraft` used by the official Minecraft launcher.
-    Original,
-    /// A user-picked location (a new instance-specific sub folder is created
-    /// inside it).
-    Custom,
-}
-
-/// Where the launcher keeps its Minecraft data (versions, libraries, assets,
-/// runtime). Independent from the per-instance game folder; selected in Settings.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum DataDirMode {
-    /// The launcher's own folder (next to the exe, portable layout).
-    #[default]
-    Launcher,
-    /// The original `~/.minecraft` used by the official Minecraft launcher.
-    /// On Windows that is `%APPDATA%\.minecraft` (Roaming), not Local.
-    Original,
-    /// A user-picked location.
-    Custom,
+fn default_true() -> bool {
+    true
 }
 
 /// Which font is used to render the whole launcher UI.
@@ -95,14 +68,13 @@ pub struct Instance {
     pub height: u32,
     pub extra_jvm_args: String,
     pub authlib_url: String,
-    #[serde(default)]
-    pub game_dir_mode: GameDirMode,
+    /// Whether the instance uses the default game directory (the original
+    /// `~/.minecraft` folder) instead of a custom one.
+    #[serde(default = "default_true")]
+    pub use_default_directory: bool,
+    /// Custom game directory path (used when `use_default_directory` is false).
     #[serde(default)]
     pub game_dir: Option<String>,
-    #[serde(default)]
-    pub data_dir_mode: DataDirMode,
-    #[serde(default)]
-    pub data_dir: Option<String>,
 }
 
 impl Instance {
@@ -118,10 +90,8 @@ impl Instance {
             height: 480,
             extra_jvm_args: String::new(),
             authlib_url: "ely.by".to_string(),
-            game_dir_mode: GameDirMode::Launcher,
+            use_default_directory: true,
             game_dir: None,
-            data_dir_mode: DataDirMode::Launcher,
-            data_dir: None,
         }
     }
 
@@ -138,48 +108,33 @@ impl Instance {
         !self.is_latest
     }
 
-    /// The folder the game actually runs in (saves, servers, mods, config).
-    pub fn game_dir_for(&self, launcher_root: &Path) -> PathBuf {
-        match self.game_dir_mode {
-            GameDirMode::Launcher => launcher_root.to_path_buf(),
-            GameDirMode::Original => original_minecraft_dir(),
-            GameDirMode::Custom => self
-                .game_dir
+    /// The single directory that holds everything for this instance: the
+    /// Minecraft data (versions/, libraries/, assets/, runtime/) and the game
+    /// files (saves, servers, mods, config). "Use default directory" means the
+    /// original `~/.minecraft` folder (like the official Minecraft launcher);
+    /// otherwise the custom path is used.
+    pub fn instance_dir(&self) -> PathBuf {
+        if self.use_default_directory {
+            original_minecraft_dir()
+        } else {
+            self.game_dir
                 .as_deref()
                 .map(PathBuf::from)
                 .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| launcher_root.to_path_buf()),
+                .map(writable_dir)
+                .unwrap_or_else(original_minecraft_dir)
         }
     }
 
-    /// Whether the game folder can be deleted together with the instance.
-    /// `Original` is shared with the official Minecraft launcher and can never
-    /// be deleted; the launcher root itself is also never deleted.
+    /// Whether the game directory can be deleted together with the instance.
+    /// The default `.minecraft` folder is shared and never deleted.
     pub fn game_dir_deletable(&self) -> bool {
-        self.game_dir_mode == GameDirMode::Custom
+        !self.use_default_directory
             && self
                 .game_dir
                 .as_deref()
                 .map(|p| !p.is_empty())
                 .unwrap_or(false)
-    }
-
-    /// The folder that holds versions/, libraries/, assets/ and runtime/ for
-    /// THIS instance. Set per instance in the Manage Instance dialog; the
-    /// game folder (saves, servers, mods) is separate and never follows it.
-    pub fn data_root_for(&self) -> PathBuf {
-        let launcher_fallback = || minecraft_root().unwrap_or_else(|_| PathBuf::from("."));
-        match self.data_dir_mode {
-            DataDirMode::Launcher => launcher_fallback(),
-            DataDirMode::Original => writable_dir(original_minecraft_dir()),
-            DataDirMode::Custom => self
-                .data_dir
-                .as_deref()
-                .map(PathBuf::from)
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(writable_dir)
-                .unwrap_or_else(launcher_fallback),
-        }
     }
 }
 
@@ -197,11 +152,6 @@ pub struct Config {
     // When false only stable "release" versions are shown in the UI.
     #[serde(default)]
     pub show_all_versions: bool,
-
-    // When true, locally-installed custom clients (version JSONs + jars that
-    // are not part of the Mojang manifest) are listed in the version dropdown.
-    #[serde(default)]
-    pub show_custom_clients: bool,
 
     // Runtime branding (Legacy Launcher style, set from `--brand` / `--channel`).
     #[serde(skip)]
@@ -265,7 +215,6 @@ impl Default for Config {
             instances: Vec::new(),
             active_instance: None,
             show_all_versions: false,
-            show_custom_clients: false,
             brand: crate::util::DEFAULT_BRAND.to_string(),
             channel: crate::util::DEFAULT_CHANNEL.to_string(),
             default_memory_mb: default_memory(),
@@ -445,7 +394,7 @@ pub fn load_config() -> Config {
         Err(_) => Config::default(),
     };
     cfg.migrate(legacy.as_ref());
-    cfg.migrate_data_dir(legacy.as_ref());
+    cfg.migrate_instance_dirs(legacy.as_ref());
     cfg.ensure_latest();
     cfg.normalize_active_instance();
     let _ = save_config(&cfg);
@@ -491,25 +440,51 @@ impl Config {
         let _ = save_config(self);
     }
 
-    /// Port the old global data-folder setting (Settings) onto every instance,
-    /// because the data folder is now configured per instance.
-    fn migrate_data_dir(&mut self, legacy: Option<&serde_json::Value>) {
+    /// Port the old separate game/data folder settings onto the single
+    /// "Game Directory" setting. Old configs used per-instance (and, even
+    /// older, global) `data_dir_mode`/`game_dir_mode` with `Launcher`,
+    /// `Original` or `Custom`; `Custom` keeps its path, everything else uses
+    /// the default `.minecraft` directory.
+    fn migrate_instance_dirs(&mut self, legacy: Option<&serde_json::Value>) {
         let Some(legacy) = legacy else {
             return;
         };
-        let Some(mode) = legacy.get("data_dir_mode").and_then(|v| v.as_str()) else {
-            return;
-        };
-        let mode = match mode {
-            "original" => DataDirMode::Original,
-            "custom" => DataDirMode::Custom,
-            _ => return,
-        };
-        let dir = legacy.get("data_dir").and_then(|v| v.as_str()).map(str::to_string);
-        for inst in &mut self.instances {
-            if inst.data_dir_mode == DataDirMode::Launcher && inst.data_dir.is_none() {
-                inst.data_dir_mode = mode.clone();
-                inst.data_dir = dir.clone();
+        let global_mode = legacy
+            .get("data_dir_mode")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let global_dir = legacy
+            .get("data_dir")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let legacy_insts = legacy.get("instances").and_then(|v| v.as_array());
+        for (i, inst) in self.instances.iter_mut().enumerate() {
+            if !inst.use_default_directory || inst.game_dir.is_some() {
+                continue;
+            }
+            let li = legacy_insts.and_then(|a| a.get(i)).and_then(|v| v.as_object());
+            let li_s = |key: &str| {
+                li.and_then(|o| o.get(key))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            };
+            let mode = li_s("data_dir_mode")
+                .or_else(|| li_s("game_dir_mode"))
+                .or(global_mode.clone());
+            let dir = li_s("data_dir")
+                .or_else(|| li_s("game_dir"))
+                .or(global_dir.clone());
+            match mode.as_deref() {
+                Some("custom") => {
+                    if let Some(d) = dir.filter(|d| !d.is_empty()) {
+                        inst.use_default_directory = false;
+                        inst.game_dir = Some(d);
+                    }
+                }
+                _ => {
+                    inst.use_default_directory = true;
+                    inst.game_dir = None;
+                }
             }
         }
     }

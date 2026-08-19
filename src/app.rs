@@ -293,29 +293,6 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, mo as u32, d as u32)
 }
 
-/// Turn whatever the user picked in the folder dialog into a path usable as a
-/// Build the instance-specific sub folder for a custom game dir. The user
-/// picks a base location; the instance gets its own folder named after it so
-/// multiple instances can share one base without mixing saves.
-fn pick_folder_with_instance_subdir(base: std::path::PathBuf, instance_name: &str) -> PathBuf {
-    let slug = if instance_name.trim().is_empty() {
-        "instance".to_string()
-    } else {
-        instance_name
-            .trim()
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>()
-    };
-    base.join(slug)
-}
-
 /// Open a folder in the platform file manager (Explorer on Windows).
 fn open_in_explorer(path: &std::path::Path) -> bool {
     #[cfg(windows)]
@@ -358,10 +335,8 @@ struct InstDraft {
     height: u32,
     extra_jvm_args: String,
     authlib_url: String,
-    game_dir_mode: crate::config::GameDirMode,
+    use_default_directory: bool,
     game_dir: Option<String>,
-    data_dir_mode: crate::config::DataDirMode,
-    data_dir: Option<String>,
 }
 
 impl InstDraft {
@@ -379,10 +354,8 @@ impl InstDraft {
             height: 480,
             extra_jvm_args: String::new(),
             authlib_url: "ely.by".to_string(),
-            game_dir_mode: crate::config::GameDirMode::Launcher,
+            use_default_directory: true,
             game_dir: None,
-            data_dir_mode: crate::config::DataDirMode::Launcher,
-            data_dir: None,
         }
     }
 
@@ -400,10 +373,8 @@ impl InstDraft {
             height: inst.height,
             extra_jvm_args: inst.extra_jvm_args.clone(),
             authlib_url: inst.authlib_url.clone(),
-            game_dir_mode: inst.game_dir_mode.clone(),
+            use_default_directory: inst.use_default_directory,
             game_dir: inst.game_dir.clone(),
-            data_dir_mode: inst.data_dir_mode.clone(),
-            data_dir: inst.data_dir.clone(),
         }
     }
 }
@@ -418,14 +389,6 @@ pub struct HanaApp {
     versions_loaded: bool,
     latest_release: Option<String>,
     installed: HashSet<String>,
-    /// Custom clients found in the local versions folder (not in the manifest).
-    custom_versions: Vec<ManifestVersion>,
-    /// Client mods (Fabric/Quilt) state for the "custom clients" section.
-    loaders_mc: String,
-    fabric_loaders: Vec<crate::minecraft::LoaderMeta>,
-    quilt_loaders: Vec<crate::minecraft::LoaderMeta>,
-    forge_loaders: Vec<crate::minecraft::LoaderMeta>,
-    loaders_requested: bool,
     search: String,
     versions_tab_downloaded: bool,
 
@@ -579,12 +542,6 @@ impl HanaApp {
             versions_loaded: false,
             latest_release: None,
             installed: HashSet::new(),
-            custom_versions: Vec::new(),
-            loaders_mc: String::new(),
-            fabric_loaders: Vec::new(),
-            quilt_loaders: Vec::new(),
-            forge_loaders: Vec::new(),
-            loaders_requested: false,
             search: String::new(),
             versions_tab_downloaded: false,
             task_active: false,
@@ -698,18 +655,6 @@ device_code: None,
                         }
                     }
                 }
-                TaskEvent::Loaders {
-                    mc,
-                    fabric,
-                    quilt,
-                    forge,
-                } => {
-                    self.loaders_mc = mc;
-                    self.fabric_loaders = fabric;
-                    self.quilt_loaders = quilt;
-                    self.forge_loaders = forge;
-                    self.loaders_requested = false;
-                }
                 TaskEvent::GameStarted(pid) => {
                     self.running_pid = Some(pid);
                     self.task_active = false;
@@ -763,12 +708,13 @@ device_code: None,
         }
     }
 
-    /// The data root (versions/libraries/assets/runtime) of the active instance.
-    /// Falls back to the launcher's own folder when no instance is selected.
+    /// The game directory (versions/libraries/assets/runtime + saves/mods) of the
+    /// active instance. Falls back to the launcher's own folder when no
+    /// instance is selected.
     fn instance_root(&self) -> PathBuf {
         self.cfg
             .active_instance()
-            .map(|i| i.data_root_for())
+            .map(|i| i.instance_dir())
             .unwrap_or_else(|| self.root.clone())
     }
 
@@ -785,53 +731,11 @@ device_code: None,
             }
         }
         self.installed = set;
-        self.scan_custom_versions();
     }
 
-    /// Re-scan after the data folder of the active instance changed.
+    /// Re-scan after the game directory of the active instance changed.
     fn refresh_active_root(&mut self) {
         self.refresh_installed();
-    }
-
-    /// Find custom clients (modded / client-mod versions) that live in the
-    /// launcher's `versions/` folder but are NOT part of the official Mojang
-    /// manifest. A version counts as a "custom client" only when it is fully
-    /// installed (valid JSON + client jar present), so the dropdown never lists
-    /// broken/partial folders.
-    fn scan_custom_versions(&mut self) {
-        let root = self.instance_root();
-        let manifest_ids: HashSet<String> = self.versions.iter().map(|v| v.id.clone()).collect();
-        let mut custom: Vec<ManifestVersion> = Vec::new();
-        let dir = root.join("versions");
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            for e in rd.flatten() {
-                let id = e.file_name().to_string_lossy().into_owned();
-                if manifest_ids.contains(&id) {
-                    continue;
-                }
-                if !crate::install::version_is_installed(&root, &id) {
-                    continue;
-                }
-                if let Ok(v) = crate::install::load_local_version(&root, &id) {
-                    // Valid only when launchable: has its own main class or
-                    // resolves through a parent (inheritsFrom), like
-                    // Fabric/Quilt/Forge loader profiles.
-                    if v.main_class.is_empty() && v.inherits_from.is_none() {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
-                custom.push(ManifestVersion {
-                    id,
-                    kind: "custom".to_string(),
-                    url: String::new(),
-                    release_time: None,
-                });
-            }
-        }
-        custom.sort_by(|a, b| a.id.cmp(&b.id));
-        self.custom_versions = custom;
     }
 
     fn add_or_replace_account(&mut self, account: Account) {
@@ -975,7 +879,7 @@ device_code: None,
         // the user whether to update first).
         if !inst.is_latest && !self.installed.contains(&version_id) {
             self.toast(ToastKind::Info, t.installing_version);
-            let root = inst.data_root_for();
+            let root = inst.instance_dir();
             self.start(move |tx, drx| crate::tasks::install_version(tx, drx, version_id, root));
             return;
         }
@@ -991,7 +895,7 @@ device_code: None,
             return;
         }
         let req = LaunchRequest { config: self.cfg.clone(), account, version: Some(version_id.clone()) };
-        let root = inst.data_root_for();
+        let root = inst.instance_dir();
         self.start(move |tx, drx| {
             crate::tasks::launch_game(tx, drx, req, root);
         });
@@ -1048,23 +952,16 @@ device_code: None,
 
     /// Only show stable releases unless the user enables all versions in settings.
     fn version_visible(&self, v: &ManifestVersion) -> bool {
-        if v.kind == "custom" {
-            return self.cfg.show_custom_clients;
-        }
         self.cfg.show_all_versions || v.kind == "release"
     }
 
-    /// Every version that may be shown right now: official manifest versions
-    /// (filtered by the "show all" switch) plus local custom clients (filtered
-    /// by the "show custom clients" switch).
+    /// Every version that may be shown right now (official manifest versions,
+    /// filtered by the "show all" switch).
     fn visible_versions(&self) -> Vec<&ManifestVersion> {
-        let mut out: Vec<&ManifestVersion> = self
-            .versions
+        self.versions
             .iter()
             .filter(|v| self.version_visible(v))
-            .collect();
-        out.extend(self.custom_versions.iter().filter(|v| self.version_visible(v)));
-        out
+            .collect()
     }
 
     // ------------------------------------------------------------------ drawing
@@ -2112,133 +2009,6 @@ device_code: None,
                 }
             });
 
-        if self.cfg.show_custom_clients {
-            ui.add_space(10.0);
-            card(ui, |ui| {
-                ui.label(RichText::new(t.client_mods).size(9.0).color(TEXT_WEAK));
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label(t.client_mods_mc);
-                    let releases: Vec<String> = self
-                        .versions
-                        .iter()
-                        .filter(|v| v.kind == "release")
-                        .map(|v| v.id.clone())
-                        .collect();
-                    let mut sel = if self.loaders_mc.is_empty() {
-                        self.latest_stable().unwrap_or_default()
-                    } else {
-                        self.loaders_mc.clone()
-                    };
-                    egui::ComboBox::from_id_salt("client_mods_mc")
-                        .selected_text(RichText::new(&sel).size(13.0).color(TEXT))
-                        .width(170.0)
-                        .show_ui(ui, |ui| {
-                            for id in &releases {
-                                ui.selectable_value(&mut sel, id.clone(), id);
-                            }
-                        });
-                    if sel != self.loaders_mc {
-                        self.loaders_mc = sel;
-                        self.fabric_loaders.clear();
-                        self.quilt_loaders.clear();
-                        self.forge_loaders.clear();
-                        self.loaders_requested = false;
-                    }
-                    let mc_sel = if self.loaders_mc.is_empty() {
-                        self.latest_stable().unwrap_or_default()
-                    } else {
-                        self.loaders_mc.clone()
-                    };
-                    if ui
-                        .add_enabled(
-                            !self.task_active && !mc_sel.is_empty(),
-                            egui::Button::new(t.client_mods_load),
-                        )
-                        .clicked()
-                    {
-                        self.loaders_mc = mc_sel.clone();
-                        self.loaders_requested = true;
-                        let mc = mc_sel.clone();
-                        self.start(move |tx, drx| crate::tasks::refresh_loaders(tx, drx, mc));
-                    }
-                    if self.task_active {
-                        ui.add(egui::Spinner::new().size(14.0).color(ACCENT));
-                    }
-                    let needs_load = !mc_sel.is_empty()
-                        && self.fabric_loaders.is_empty()
-                        && self.quilt_loaders.is_empty()
-                        && self.forge_loaders.is_empty();
-                    if needs_load && !self.task_active && !self.loaders_requested {
-                        self.loaders_mc = mc_sel.clone();
-                        self.loaders_requested = true;
-                        let mc = self.loaders_mc.clone();
-                        self.start(move |tx, drx| crate::tasks::refresh_loaders(tx, drx, mc));
-                    }
-                });
-
-                let mut install_targets: Vec<(crate::minecraft::LoaderKind, String, String)> =
-                    Vec::new();
-                let mc = self.loaders_mc.clone();
-                const MAX: usize = 8;
-                let mut loader_section =
-                    |ui: &mut egui::Ui,
-                     name: &str,
-                     kind: crate::minecraft::LoaderKind,
-                     metas: &[crate::minecraft::LoaderMeta]| {
-                        if metas.is_empty() {
-                            return;
-                        }
-                        ui.add_space(6.0);
-                        ui.label(RichText::new(name).strong().size(12.5));
-                        for meta in metas.iter().take(MAX) {
-                            let id = kind.version_id(&mc, &meta.version);
-                            let installed = self.installed.contains(&id);
-                            ui.horizontal(|ui| {
-                                let label = if meta.stable == Some(false) {
-                                    format!("{}  [beta]", meta.version)
-                                } else {
-                                    meta.version.clone()
-                                };
-                                ui.label(RichText::new(label).size(12.5).color(TEXT));
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if installed {
-                                            ui.label(
-                                                RichText::new(t.installed)
-                                                    .color(OK_GREEN)
-                                                    .size(11.0),
-                                            );
-                                        } else if ui
-                                            .add_enabled(
-                                                !self.task_active,
-                                                egui::Button::new(t.pick_version),
-                                            )
-                                            .clicked()
-                                        {
-                                            install_targets
-                                                .push((kind, mc.clone(), meta.version.clone()));
-                                        }
-                                    },
-                                );
-                            });
-                        }
-                    };
-
-                loader_section(ui, "Fabric", crate::minecraft::LoaderKind::Fabric, &self.fabric_loaders);
-                loader_section(ui, "Quilt", crate::minecraft::LoaderKind::Quilt, &self.quilt_loaders);
-                loader_section(ui, "Forge", crate::minecraft::LoaderKind::Forge, &self.forge_loaders);
-
-                for (kind, mc, loader) in install_targets {
-                    let root = self.instance_root();
-                    self.start(move |tx, drx| {
-                        crate::tasks::install_custom_client(tx, drx, kind, mc, loader, root);
-                    });
-                }
-            });
-        }
-
         if let Some(action) = action {
             match action {
                 VersionAction::Select(id) => {
@@ -2525,7 +2295,7 @@ device_code: None,
             }
             if let Some(idx) = open_folder_idx {
                 let inst = &self.cfg.instances[idx];
-                let dir = inst.game_dir_for(&self.root);
+                let dir = inst.instance_dir();
                 let _ = std::fs::create_dir_all(&dir);
                 if !open_in_explorer(&dir) {
                     self.toast(
@@ -2604,9 +2374,7 @@ device_code: None,
                                 .show_rows(ui, ROW_H, list.len(), |ui, range| {
                                     for i in range {
                                         let v = list[i];
-                                        let kind = if v.kind == "custom" {
-                                            t.kind_custom
-                                        } else if v.kind == "release" {
+                                        let kind = if v.kind == "release" {
                                             "Release"
                                         } else {
                                             v.kind.as_str()
@@ -2682,38 +2450,8 @@ device_code: None,
             });
             ui.add_space(8.0);
             ui.label(RichText::new(t.game_dir_label).strong().size(13.0));
-            ui.horizontal(|ui| {
-                let selected = match draft.game_dir_mode {
-                    crate::config::GameDirMode::Launcher => t.game_dir_launcher,
-                    crate::config::GameDirMode::Original => t.game_dir_original,
-                    crate::config::GameDirMode::Custom => t.game_dir_custom,
-                };
-                let mut new_mode = draft.game_dir_mode.clone();
-                egui::ComboBox::from_id_salt("inst_dialog_gamedir")
-                    .selected_text(RichText::new(selected).size(13.0).color(TEXT))
-                    .width(240.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut new_mode,
-                            crate::config::GameDirMode::Launcher,
-                            t.game_dir_launcher,
-                        );
-                        ui.selectable_value(
-                            &mut new_mode,
-                            crate::config::GameDirMode::Original,
-                            t.game_dir_original,
-                        );
-                        ui.selectable_value(
-                            &mut new_mode,
-                            crate::config::GameDirMode::Custom,
-                            t.game_dir_custom,
-                        );
-                    });
-                if new_mode != draft.game_dir_mode {
-                    draft.game_dir_mode = new_mode;
-                }
-            });
-            if draft.game_dir_mode == crate::config::GameDirMode::Custom {
+            ui.checkbox(&mut draft.use_default_directory, t.use_default_directory);
+            if !draft.use_default_directory {
                 ui.horizontal(|ui| {
                     ui.label(t.game_dir_path_label);
                     let path = draft.game_dir.get_or_insert_with(String::new);
@@ -2725,8 +2463,7 @@ device_code: None,
                             .set_title(t.browse_folder)
                             .pick_folder()
                         {
-                            let custom = pick_folder_with_instance_subdir(picked, &draft.name);
-                            draft.game_dir = Some(custom.to_string_lossy().into_owned());
+                            draft.game_dir = Some(picked.to_string_lossy().into_owned());
                         }
                     }
                     if ui.button(t.clear).clicked() {
@@ -2734,78 +2471,19 @@ device_code: None,
                     }
                 });
             }
-            ui.label(
-                RichText::new(t.game_dir_hint)
-                    .color(TEXT_WEAK)
-                    .size(10.5),
-            );
-            ui.add_space(10.0);
-            ui.label(RichText::new(t.data_dir_label).strong().size(13.0));
-            ui.horizontal(|ui| {
-                let selected = match draft.data_dir_mode {
-                    crate::config::DataDirMode::Launcher => t.data_dir_launcher,
-                    crate::config::DataDirMode::Original => t.data_dir_original,
-                    crate::config::DataDirMode::Custom => t.data_dir_custom,
-                };
-                let mut new_mode = draft.data_dir_mode.clone();
-                egui::ComboBox::from_id_salt("inst_dialog_datadir")
-                    .selected_text(RichText::new(selected).size(13.0).color(TEXT))
-                    .width(240.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut new_mode,
-                            crate::config::DataDirMode::Launcher,
-                            t.data_dir_launcher,
-                        );
-                        ui.selectable_value(
-                            &mut new_mode,
-                            crate::config::DataDirMode::Original,
-                            t.data_dir_original,
-                        );
-                        ui.selectable_value(
-                            &mut new_mode,
-                            crate::config::DataDirMode::Custom,
-                            t.data_dir_custom,
-                        );
-                    });
-                if new_mode != draft.data_dir_mode {
-                    draft.data_dir_mode = new_mode;
-                }
-            });
-            if draft.data_dir_mode == crate::config::DataDirMode::Custom {
-                ui.horizontal(|ui| {
-                    ui.label(t.data_dir_path_label);
-                    let path = draft.data_dir.get_or_insert_with(String::new);
-                    ui.add(
-                        egui::TextEdit::singleline(path).desired_width(180.0),
-                    );
-                    if ui.button(t.browse_folder).clicked() {
-                        if let Some(picked) = rfd::FileDialog::new()
-                            .set_title(t.browse_folder)
-                            .pick_folder()
-                        {
-                            draft.data_dir = Some(picked.to_string_lossy().into_owned());
-                        }
-                    }
-                    if ui.button(t.clear).clicked() {
-                        draft.data_dir = None;
-                    }
-                });
-            }
             let root_show = {
-                let dummy = Instance::new(draft.name.clone());
-                let mut inst = dummy;
-                inst.data_dir_mode = draft.data_dir_mode.clone();
-                inst.data_dir = draft.data_dir.clone();
-                inst.data_root_for()
+                let mut inst = Instance::new(draft.name.clone());
+                inst.use_default_directory = draft.use_default_directory;
+                inst.game_dir = draft.game_dir.clone();
+                inst.instance_dir()
             };
             ui.label(
-                RichText::new(t.data_dir_current.replace("{}", &root_show.to_string_lossy()))
+                RichText::new(t.game_dir_current.replace("{}", &root_show.to_string_lossy()))
                     .color(TEXT_WEAK)
                     .size(10.5),
             );
             ui.label(
-                RichText::new(t.data_dir_hint)
+                RichText::new(t.game_dir_hint)
                     .color(TEXT_WEAK)
                     .size(10.5),
             );
@@ -2866,10 +2544,8 @@ device_code: None,
                 inst.height = draft.height;
                 inst.extra_jvm_args = draft.extra_jvm_args.clone();
                 inst.authlib_url = draft.authlib_url.clone();
-                inst.game_dir_mode = draft.game_dir_mode.clone();
+                inst.use_default_directory = draft.use_default_directory;
                 inst.game_dir = draft.game_dir.clone();
-                inst.data_dir_mode = draft.data_dir_mode.clone();
-                inst.data_dir = draft.data_dir.clone();
                 if was_active {
                     self.cfg.active_instance = Some(name);
                 }
@@ -2884,10 +2560,8 @@ device_code: None,
                 inst.height = draft.height;
                 inst.extra_jvm_args = draft.extra_jvm_args;
                 inst.authlib_url = draft.authlib_url;
-                inst.game_dir_mode = draft.game_dir_mode;
+                inst.use_default_directory = draft.use_default_directory;
                 inst.game_dir = draft.game_dir;
-                inst.data_dir_mode = draft.data_dir_mode;
-                inst.data_dir = draft.data_dir;
                 let idx = self.cfg.instances.len();
                 self.cfg.instances.push(inst);
                 self.cfg.active_instance = Some(self.cfg.instances[idx].name.clone());
@@ -2953,7 +2627,7 @@ device_code: None,
             let was_active =
                 self.cfg.active_instance.as_deref() == Some(draft.name.as_str());
             if draft.also_folder && draft.deletable {
-                let dir = self.cfg.instances[draft.idx].game_dir_for(&self.root);
+                let dir = self.cfg.instances[draft.idx].instance_dir();
                 if dir.exists() {
                     let _ = std::fs::remove_dir_all(&dir);
                 }
@@ -3373,17 +3047,6 @@ device_code: None,
                 {
                     let _ = save_config(&self.cfg);
                 }
-                if ui
-                    .checkbox(&mut self.cfg.show_custom_clients, t.show_custom_clients)
-                    .changed()
-                {
-                    let _ = save_config(&self.cfg);
-                }
-                ui.label(
-                    RichText::new(t.custom_clients_hint)
-                        .color(TEXT_WEAK)
-                        .size(10.5),
-                );
             });
 
             ui.add_space(8.0);
