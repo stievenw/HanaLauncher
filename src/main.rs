@@ -82,7 +82,7 @@ fn main() -> eframe::Result {
         .with_decorations(false)
         .with_inner_size([1024.0, 660.0])
         .with_min_inner_size([860.0, 540.0])
-        .with_title("HanaLauncher — Minecraft Launcher (Ely.by)");
+        .with_title("HanaLauncher — Minecraft Launcher");
 
     // Window icon (also shows in the taskbar). Falls back silently if the
     // resource is missing or cannot be decoded.

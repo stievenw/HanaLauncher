@@ -7,7 +7,7 @@ fn main() {
         // Metadata shown in Explorer -> Properties -> Details.
         res.set("CompanyName", "Hanakama");
         res.set("ProductName", "Hana Launcher");
-        res.set("FileDescription", "Hana Launcher - Minecraft Launcher (Ely.by)");
+        res.set("FileDescription", "Hana Launcher - Minecraft Launcher");
         res.set("OriginalFilename", "HanaLauncher.exe");
         res.set("LegalCopyright", "Copyright (c) 2026 Hanakama");
         res.set_version_info(winresource::VersionInfo::FILEVERSION, 0x0001000000000000);

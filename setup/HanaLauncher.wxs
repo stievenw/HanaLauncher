@@ -24,7 +24,7 @@
              InstallScope="perMachine"
              Platform="x64"
              Manufacturer="StievenW"
-             Description="Hana Launcher - Minecraft Launcher (Ely.by)"
+             Description="Hana Launcher - Minecraft Launcher"
              Comments="Hana Launcher setup - StievenW" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of Hana Launcher is already installed." />

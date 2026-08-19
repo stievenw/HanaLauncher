@@ -63,6 +63,11 @@ if ($LASTEXITCODE -ne 0) { throw "light (bundle) failed" }
 # A self-signed signature embeds the publisher identity (StievenW) but Windows
 # still shows "Unknown Publisher" (no trusted CA). It never gets committed
 # unless a CA-issued certificate is used.
+#
+# IMPORTANT: a Burn bundle must NOT be signed with signtool directly - that
+# corrupts the attached container ("Failed to extract all files from
+# container, erf: 1:2:0"). The correct flow is insignia: extract the engine,
+# sign the engine, re-attach it, then sign the outer bundle.
 $setup = Join-Path $setupDir "HanaLauncherSetup.exe"
 $msi = Join-Path $setupDir "HanaLauncher.msi"
 $pfx = Join-Path $setupDir "signing\StievenW.pfx"
@@ -75,17 +80,35 @@ if ($usePfx -or $env:CODE_SIGN_THUMBPRINT) {
         -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
         Sort-Object FullName -Descending | Select-Object -First 1
     if (-not $signtool) { throw "signtool.exe not found (Windows SDK)" }
-    foreach ($f in @($release, $msi, $setup)) {
+
+    function Sign-File([string]$path) {
         if ($usePfx) {
             $pw = (Get-Content $pwFile -Raw).Trim()
             & $signtool.FullName sign /f $pfx /p $pw /fd SHA256 `
-                /tr "http://timestamp.digicert.com" /td SHA256 /v $f
+                /tr "http://timestamp.digicert.com" /td SHA256 /v $path
         } else {
             & $signtool.FullName sign /sha1 $env:CODE_SIGN_THUMBPRINT /fd SHA256 `
-                /tr "http://timestamp.digicert.com" /td SHA256 /v $f
+                /tr "http://timestamp.digicert.com" /td SHA256 /v $path
         }
-        if ($LASTEXITCODE -ne 0) { throw "signing failed: $f" }
+        if ($LASTEXITCODE -ne 0) { throw "signing failed: $path" }
     }
+
+    # The plain launcher exe and the MSI are signed directly.
+    Sign-File $release
+    Sign-File $msi
+
+    # The Burn bundle needs the insignia two-step (see comment above).
+    $engineTmp = Join-Path $setupDir "engine.exe"
+    $bundleTmp = Join-Path $setupDir "HanaLauncherSetup.new.exe"
+    & insignia.exe -ib $setup -o $engineTmp
+    if ($LASTEXITCODE -ne 0) { throw "insignia extract engine failed" }
+    Sign-File $engineTmp
+    & insignia.exe -ab $engineTmp $setup -o $bundleTmp
+    if ($LASTEXITCODE -ne 0) { throw "insignia re-attach failed" }
+    Remove-Item $engineTmp -Force
+    Remove-Item $setup -Force
+    Move-Item $bundleTmp $setup -Force
+    Sign-File $setup
 }
 
 Pop-Location
