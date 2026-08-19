@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hana Launcher - MSI product definition (WiX 3.14).
+
+  Build: see build-setup.ps1. candle+light from tools-wix are used so the
+  setup can be built without any extra software.
+
+  Upgrade flow: a fixed UpgradeCode + MajorUpgrade means installing a newer
+  setup over an older one replaces the program (user data lives in %APPDATA%,
+  so it survives updates).
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+  <Product Id="*"
+           Name="Hana Launcher"
+           Language="1033"
+           Version="1.0.0"
+           Manufacturer="StievenW"
+           UpgradeCode="3638E624-4ABC-49DB-9DD7-A1CC3B71E5EB">
+
+    <Package Id="*"
+             InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Platform="x64"
+             Manufacturer="StievenW"
+             Description="Hana Launcher - Minecraft Launcher (Ely.by)"
+             Comments="Hana Launcher setup - StievenW" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Hana Launcher is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="app.ico" SourceFile="..\assets\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="app.ico" />
+
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+    <UIRef Id="WixUI_InstallDir" />
+
+    <Feature Id="ProductFeature" Title="Hana Launcher" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="HanaLauncher" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+      <Directory Id="DesktopFolder" />
+    </Directory>
+  </Product>
+
+  <Fragment>
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="ProductExe" Guid="*" Win64="yes">
+        <File Id="HanaLauncherExe"
+              Source="..\target\release\HanaLauncher.exe"
+              KeyPath="yes" />
+      </Component>
+
+      <!-- External resource files (icon, background artwork, Monogram fonts).
+           Kept out of the exe so the launcher binary stays small. -->
+      <Directory Id="RESOURCESDIR" Name="resources">
+        <Component Id="ResourceIcon" Guid="*" Win64="yes">
+          <File Id="ResourceIconPng"
+                Source="..\resources\icon.png.x"
+                KeyPath="yes" />
+        </Component>
+        <Component Id="ResourceBg" Guid="*" Win64="yes">
+          <File Id="ResourceBgJpg"
+                Source="..\resources\bg.jpg.x"
+                KeyPath="yes" />
+        </Component>
+        <Component Id="ResourceFont" Guid="*" Win64="yes">
+          <File Id="ResourceFontTtf"
+                Source="..\resources\monogram.ttf.x"
+                KeyPath="yes" />
+        </Component>
+        <Component Id="ResourceFontItalic" Guid="*" Win64="yes">
+          <File Id="ResourceFontItalicTtf"
+                Source="..\resources\monogram-italic.ttf.x"
+                KeyPath="yes" />
+        </Component>
+      </Directory>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut Id="StartMenuHanaLauncher"
+                  Name="Hana Launcher"
+                  Target="[INSTALLFOLDER]HanaLauncher.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="app.ico" />
+        <RemoveFolder Id="RemoveStartMenuFolder"
+                      Directory="ProgramMenuFolder"
+                      On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\Hana\HanaLauncher"
+                       Name="start_menu_shortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="*">
+        <Shortcut Id="DesktopHanaLauncher"
+                  Name="Hana Launcher"
+                  Target="[INSTALLFOLDER]HanaLauncher.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="app.ico" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\Hana\HanaLauncher"
+                       Name="desktop_shortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <ComponentGroup Id="ProductComponents">
+      <ComponentRef Id="ProductExe" />
+      <ComponentRef Id="ResourceIcon" />
+      <ComponentRef Id="ResourceBg" />
+      <ComponentRef Id="ResourceFont" />
+      <ComponentRef Id="ResourceFontItalic" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>
