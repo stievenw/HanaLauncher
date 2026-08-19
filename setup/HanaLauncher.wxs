@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <!--
   Hana Launcher - MSI product definition (WiX 3.14).
 
@@ -15,7 +15,7 @@
   <Product Id="*"
            Name="Hana Launcher"
            Language="1033"
-           Version="1.0.2"
+           Version="1.0.3"
            Manufacturer="StievenW"
            UpgradeCode="3638E624-4ABC-49DB-9DD7-A1CC3B71E5EB">
 

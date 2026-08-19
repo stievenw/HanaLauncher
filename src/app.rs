@@ -425,6 +425,7 @@ pub struct HanaApp {
     fabric_loaders: Vec<crate::minecraft::LoaderMeta>,
     quilt_loaders: Vec<crate::minecraft::LoaderMeta>,
     forge_loaders: Vec<crate::minecraft::LoaderMeta>,
+    loaders_requested: bool,
     search: String,
     versions_tab_downloaded: bool,
 
@@ -583,6 +584,7 @@ impl HanaApp {
             fabric_loaders: Vec::new(),
             quilt_loaders: Vec::new(),
             forge_loaders: Vec::new(),
+            loaders_requested: false,
             search: String::new(),
             versions_tab_downloaded: false,
             task_active: false,
@@ -706,6 +708,7 @@ device_code: None,
                     self.fabric_loaders = fabric;
                     self.quilt_loaders = quilt;
                     self.forge_loaders = forge;
+                    self.loaders_requested = false;
                 }
                 TaskEvent::GameStarted(pid) => {
                     self.running_pid = Some(pid);
@@ -2140,16 +2143,37 @@ device_code: None,
                         self.fabric_loaders.clear();
                         self.quilt_loaders.clear();
                         self.forge_loaders.clear();
+                        self.loaders_requested = false;
                     }
+                    let mc_sel = if self.loaders_mc.is_empty() {
+                        self.latest_stable().unwrap_or_default()
+                    } else {
+                        self.loaders_mc.clone()
+                    };
                     if ui
-                        .add_enabled(!self.task_active, egui::Button::new(t.client_mods_load))
+                        .add_enabled(
+                            !self.task_active && !mc_sel.is_empty(),
+                            egui::Button::new(t.client_mods_load),
+                        )
                         .clicked()
                     {
-                        let mc = self.loaders_mc.clone();
+                        self.loaders_mc = mc_sel.clone();
+                        self.loaders_requested = true;
+                        let mc = mc_sel.clone();
                         self.start(move |tx, drx| crate::tasks::refresh_loaders(tx, drx, mc));
                     }
                     if self.task_active {
                         ui.add(egui::Spinner::new().size(14.0).color(ACCENT));
+                    }
+                    let needs_load = !mc_sel.is_empty()
+                        && self.fabric_loaders.is_empty()
+                        && self.quilt_loaders.is_empty()
+                        && self.forge_loaders.is_empty();
+                    if needs_load && !self.task_active && !self.loaders_requested {
+                        self.loaders_mc = mc_sel.clone();
+                        self.loaders_requested = true;
+                        let mc = self.loaders_mc.clone();
+                        self.start(move |tx, drx| crate::tasks::refresh_loaders(tx, drx, mc));
                     }
                 });
 

@@ -86,7 +86,7 @@ impl LoaderKind {
         match self {
             LoaderKind::Fabric => format!("fabric-loader-{}-{}", loader, mc),
             LoaderKind::Quilt => format!("quilt-loader-{}-{}", loader, mc),
-            LoaderKind::Forge => format!("{}-{}", mc, loader),
+            LoaderKind::Forge => format!("{}-forge-{}", mc, loader),
         }
     }
 }
@@ -146,39 +146,18 @@ const MOD_CATALOG_URL: &str =
     "https://stievenw.github.io/HanaLauncher-portal/client-mod-catalog.json";
 
 /// Loader lists (fabric, quilt, forge) for a Minecraft version, newest first.
-/// Prefers the scraped catalog; falls back to the live metadata endpoints.
+/// For each family, uses the scraped catalog when the version is present and
+/// falls back to the live metadata endpoint (meta.fabricmc.net,
+/// meta.quiltmc.org, maven.minecraftforge.net) otherwise - one stale family
+/// never breaks the others, and versions still get a correct, official list.
 pub fn fetch_loader_lists(
     client: &reqwest::blocking::Client,
     mc: &str,
 ) -> Result<(Vec<LoaderMeta>, Vec<LoaderMeta>, Vec<LoaderMeta>)> {
-    if let Ok(cat) = fetch_catalog(client) {
-        if let Some((f, q, g)) = catalog_lists(&cat, mc) {
-            return Ok((f, q, g));
-        }
-    }
-    let fabric = fetch_loader_list(client, LoaderKind::Fabric, mc)?;
-    let quilt = fetch_loader_list(client, LoaderKind::Quilt, mc)?;
-    let forge = fetch_forge_list(client, mc)?;
-    Ok((fabric, quilt, forge))
-}
-
-fn fetch_catalog(client: &reqwest::blocking::Client) -> Result<LoaderCatalog> {
-    let text = client
-        .get(MOD_CATALOG_URL)
-        .send()
-        .context(crate::lang::current().failed_fetch_loaders)?
-        .text()
-        .context(crate::lang::current().failed_read_versions)?;
-    serde_json::from_str(&text).context(crate::lang::current().failed_fetch_loaders)
-}
-
-fn catalog_lists(
-    cat: &LoaderCatalog,
-    mc: &str,
-) -> Option<(Vec<LoaderMeta>, Vec<LoaderMeta>, Vec<LoaderMeta>)> {
-    let fam = |name: &str| {
-        cat.versions
-            .get(name)
+    let cat = fetch_catalog(client).ok();
+    let fam_meta = |name: &str| {
+        cat.as_ref()
+            .and_then(|c| c.versions.get(name))
             .and_then(|f| f.loaders.get(mc))
             .map(|versions| {
                 let mut metas: Vec<LoaderMeta> = versions
@@ -192,10 +171,29 @@ fn catalog_lists(
                 metas
             })
     };
-    let fabric = fam("fabric")?;
-    let quilt = fam("quilt").unwrap_or_default();
-    let forge = fam("forge").unwrap_or_default();
-    Some((fabric, quilt, forge))
+    let fabric = match fam_meta("fabric") {
+        Some(metas) => metas,
+        None => fetch_loader_list(client, LoaderKind::Fabric, mc)?,
+    };
+    let quilt = match fam_meta("quilt") {
+        Some(metas) => metas,
+        None => fetch_loader_list(client, LoaderKind::Quilt, mc)?,
+    };
+    let forge = match fam_meta("forge") {
+        Some(metas) => metas,
+        None => fetch_forge_list(client, mc)?,
+    };
+    Ok((fabric, quilt, forge))
+}
+
+fn fetch_catalog(client: &reqwest::blocking::Client) -> Result<LoaderCatalog> {
+    let text = client
+        .get(MOD_CATALOG_URL)
+        .send()
+        .context(crate::lang::current().failed_fetch_loaders)?
+        .text()
+        .context(crate::lang::current().failed_read_versions)?;
+serde_json::from_str(&text).context(crate::lang::current().failed_fetch_loaders)
 }
 
 /// Forge loader list for a Minecraft version, parsed from the Maven
@@ -555,3 +553,4 @@ pub struct AssetObject {
     pub hash: String,
     pub size: u64,
 }
+

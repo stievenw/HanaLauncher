@@ -105,7 +105,8 @@ pub fn refresh_loaders(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision
     });
 }
 
-/// Install a Fabric/Quilt loader profile on top of a vanilla version.
+/// Install a Fabric/Quilt loader profile on top of a vanilla version, or a
+/// Forge build via its official installer (Maven installer jar + --installClient).
 pub fn install_custom_client(
     tx: Sender<TaskEvent>,
     decisions: Receiver<LaunchDecision>,
@@ -115,8 +116,26 @@ pub fn install_custom_client(
     root: PathBuf,
 ) {
     spawn_tx(tx, decisions, "install-custom", move |ctx| {
-        let id = crate::install::fetch_loader_profile(&ctx.client, &root, kind, &mc, &loader)?;
-        crate::install::install_version(&ctx.client, &root, &id, &ctx.reporter)?;
+        let id = match kind {
+            crate::minecraft::LoaderKind::Fabric | crate::minecraft::LoaderKind::Quilt => {
+                let id =
+                    crate::install::fetch_loader_profile(&ctx.client, &root, kind, &mc, &loader)?;
+                crate::install::install_version(&ctx.client, &root, &id, &ctx.reporter)?;
+                id
+            }
+            crate::minecraft::LoaderKind::Forge => {
+                crate::install::install_version(&ctx.client, &root, &mc, &ctx.reporter)?;
+                let id = crate::install::install_forge_via_installer(
+                    &ctx.client,
+                    &root,
+                    &mc,
+                    &loader,
+                    &ctx.reporter,
+                )?;
+                crate::install::install_version(&ctx.client, &root, &id, &ctx.reporter)?;
+                id
+            }
+        };
         let _ = ctx.tx.send(TaskEvent::Done(id));
         Ok(())
     });

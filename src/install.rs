@@ -246,6 +246,73 @@ pub fn fetch_loader_profile(
     Ok(id)
 }
 
+/// Install a Forge build the official way: download `forge-{mc}-{build}-
+/// installer.jar` from Maven and run it headless with `--installClient`, which
+/// generates the version profile JSON and the patched client/universal jars.
+/// The vanilla version (`inheritsFrom`) must already be installed. Returns the
+/// version id `{mc}-forge-{build}`.
+pub fn install_forge_via_installer(
+    client: &Client,
+    root: &Path,
+    mc: &str,
+    build: &str,
+    reporter: &Reporter,
+) -> Result<String> {
+    let ver = format!("{mc}-{build}");
+    let id = format!("{mc}-forge-{build}");
+    let json_path = version_json_path(root, &id);
+    if json_path.exists() {
+        return Ok(id);
+    }
+    let installer_url = format!(
+        "{}/net/minecraftforge/forge/{ver}/forge-{ver}-installer.jar",
+        LoaderKind::Forge.base_url()
+    );
+    let tmp_jar = std::env::temp_dir().join(format!("hana-forge-{id}.jar"));
+    reporter.log(format!("Mengunduh installer Forge {ver}..."));
+    download_file(client, &installer_url, &tmp_jar, None, None, reporter, "forge-installer")
+        .with_context(|| format!("Gagal mengunduh installer Forge {ver}"))?;
+
+    // The installer requires a (possibly empty) launcher profile file to find
+    // where it should write the version profile and libraries.
+    let profiles = root.join("launcher_profiles.json");
+    if !profiles.exists() {
+        fs::write(&profiles, r#"{"profiles":{}}"#)?;
+    }
+
+    let java = crate::java::find_cached_runtime_major(root, 21)
+        .or_else(|| crate::java::find_cached_runtime_major(root, 17))
+        .or_else(|| crate::java::detect_java(None, root))
+        .ok_or_else(|| anyhow!("Tidak ditemukan Java untuk menjalankan installer Forge"))?;
+    reporter.log("Menjalankan installer Forge (instal klien)...");
+    let output = std::process::Command::new(&java)
+        .arg("-jar")
+        .arg(&tmp_jar)
+        .arg("--installClient")
+        .arg(root)
+        .output()
+        .context("Gagal menjalankan installer Forge")?;
+    let _ = fs::remove_file(&tmp_jar);
+
+    let ok = output.status.success()
+        || output
+            .status
+            .code()
+            .map(|c| c == 0 || c == 1)
+            .unwrap_or(false);
+    if !(ok && json_path.exists()) {
+        let err = String::from_utf8_lossy(&output.stderr);
+        let detail = err.trim();
+        let msg = if detail.is_empty() {
+            "Installer Forge gagal menyelesaikan instalasi".to_string()
+        } else {
+            format!("Installer Forge gagal menyelesaikan instalasi: {detail}")
+        };
+        return Err(anyhow!(msg));
+    }
+    Ok(id)
+}
+
 /// Resolve a version and all of its parents into a single, fully materialized
 /// `Version`. Client mod profiles (Fabric/Quilt) only carry `id`,
 /// `inheritsFrom`, `mainClass`, extra `arguments` and their own `libraries`;
