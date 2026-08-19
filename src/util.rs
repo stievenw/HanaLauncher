@@ -19,6 +19,8 @@ pub const OAUTH_DEVICE_CODE_URL: &str = "https://account.ely.by/api/oauth2/v1/de
 pub const OAUTH_TOKEN_URL: &str = "https://account.ely.by/api/oauth2/v1/token";
 pub const OAUTH_INFO_URL: &str = "https://account.ely.by/api/account/v1/info";
 
+pub const ELY_REGISTER_URL: &str = "https://account.ely.by/register";
+
 pub const DEVICE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 pub const YGGDRASIL_AUTH_URL: &str = "https://authserver.ely.by/auth/authenticate";

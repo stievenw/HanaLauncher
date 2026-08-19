@@ -35,6 +35,9 @@ fn spawn_tx(
                     let msg = format!("{e:#}");
                     if msg.contains("__NEED_2FA__") {
                         let _ = tx.send(TaskEvent::NeedsTwoFactor);
+                    } else if msg.contains(crate::auth::CANCELLED_MARKER) {
+                        // User cancelled -> finish quietly, no error toast.
+                        let _ = tx.send(TaskEvent::Done(String::new()));
                     } else {
                         let _ = tx.send(TaskEvent::Error(msg));
                     }
@@ -65,6 +68,41 @@ pub fn refresh_versions(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecisio
 pub fn install_version(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>, version_id: String, root: PathBuf) {
     spawn_tx(tx, decisions, "install", move |ctx| {
         crate::install::install_version(&ctx.client, &root, &version_id, &ctx.reporter)?;
+        Ok(())
+    });
+}
+
+/// Fetch the Fabric and Quilt loader lists for a Minecraft version.
+pub fn refresh_loaders(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>, mc: String) {
+    spawn_tx(tx, decisions, "loaders", move |ctx| {
+        let fabric = crate::minecraft::fetch_loader_list(
+            &ctx.client,
+            crate::minecraft::LoaderKind::Fabric,
+            &mc,
+        )?;
+        let quilt = crate::minecraft::fetch_loader_list(
+            &ctx.client,
+            crate::minecraft::LoaderKind::Quilt,
+            &mc,
+        )?;
+        let _ = ctx.tx.send(TaskEvent::Loaders { mc, fabric, quilt });
+        Ok(())
+    });
+}
+
+/// Install a Fabric/Quilt loader profile on top of a vanilla version.
+pub fn install_custom_client(
+    tx: Sender<TaskEvent>,
+    decisions: Receiver<LaunchDecision>,
+    kind: crate::minecraft::LoaderKind,
+    mc: String,
+    loader: String,
+    root: PathBuf,
+) {
+    spawn_tx(tx, decisions, "install-custom", move |ctx| {
+        let id = crate::install::fetch_loader_profile(&ctx.client, &root, kind, &mc, &loader)?;
+        crate::install::install_version(&ctx.client, &root, &id, &ctx.reporter)?;
+        let _ = ctx.tx.send(TaskEvent::Done(id));
         Ok(())
     });
 }
@@ -118,6 +156,7 @@ pub fn login_password(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>
     });
 }
 
+#[allow(dead_code)]
 pub fn download_java(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>, root: PathBuf, required_major: u32) {
     spawn_tx(tx, decisions, "download-java", move |ctx| {
         let dir = crate::java::download_runtime(&ctx.client, &root, required_major, &ctx.reporter)?;
@@ -126,9 +165,13 @@ pub fn download_java(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>,
     });
 }
 
+#[allow(dead_code)]
 pub fn refresh_account(tx: Sender<TaskEvent>, decisions: Receiver<LaunchDecision>, account: crate::config::Account) {
     spawn_tx(tx, decisions, "refresh-account", move |ctx| {
-        let updated = if account.account_type == crate::config::ACCOUNT_TYPE_ELY_OAUTH {
+        let updated = if account.account_type == crate::config::ACCOUNT_TYPE_OFFLINE {
+            // Offline accounts never expire - nothing to refresh.
+            account.clone()
+        } else if account.account_type == crate::config::ACCOUNT_TYPE_ELY_OAUTH {
             crate::auth::refresh_oauth(&ctx.client, &account)?
         } else {
             crate::auth::refresh_password(&ctx.client, &account)?
@@ -216,7 +259,7 @@ fn launch_inner(ctx: &TaskCtx, req: &LaunchRequest, root: &PathBuf) -> Result<()
     let version_id =
         version_id.ok_or_else(|| anyhow::anyhow!(lang.no_version_selected_err))?;
 
-    let version = crate::install::load_or_fetch_version(&ctx.client, root, &version_id)?;
+    let version = crate::install::resolve_version(&ctx.client, root, &version_id)?;
 
     // Resolve Java runtime. The selected Java must be *compatible* with the
     // version: legacy LaunchWrapper versions need Java 8 exactly (Java 9+ and

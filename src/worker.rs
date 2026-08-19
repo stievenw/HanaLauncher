@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 
 use crate::config::{Account, Config};
-use crate::minecraft::ManifestVersion;
+use crate::minecraft::{LoaderMeta, ManifestVersion};
 
 /// Answer sent back from the UI thread when a background task asks the user
 /// to choose something (e.g. update the "latest" instance or keep playing).
@@ -30,6 +30,8 @@ pub enum TaskEvent {
     AvatarReady { uuid: String, width: u32, height: u32, rgba: Vec<u8> },
     /// The remote version list was fetched (newest stable release + full list).
     VersionList { latest: Option<String>, versions: Vec<ManifestVersion> },
+    /// Fabric/Quilt loader lists for one Minecraft version were fetched.
+    Loaders { mc: String, fabric: Vec<LoaderMeta>, quilt: Vec<LoaderMeta> },
     /// Game process produced a line of output.
     GameOutput(String),
     /// Game process was spawned successfully.
@@ -37,6 +39,7 @@ pub enum TaskEvent {
     /// Game process exited with the given code.
     GameExited(i32),
     /// Java runtime was downloaded/extracted to this directory.
+    #[allow(dead_code)]
     JavaReady(PathBuf),
     /// The "latest" instance found a newer stable release than the one
     /// installed; the UI must ask the user to continue or update.

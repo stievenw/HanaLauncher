@@ -41,6 +41,60 @@ impl VersionManifest {
     }
 }
 
+/// Client mod / loader families the launcher can install on top of a vanilla
+/// release: Fabric (meta.fabricmc.net) and Quilt (meta.quiltmc.org).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoaderKind {
+    Fabric,
+    Quilt,
+}
+
+impl LoaderKind {
+    pub fn base_url(&self) -> &'static str {
+        match self {
+            LoaderKind::Fabric => "https://meta.fabricmc.net/v2",
+            LoaderKind::Quilt => "https://meta.quiltmc.org/v3",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LoaderListEntry {
+    pub loader: LoaderMeta,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LoaderMeta {
+    pub version: String,
+    pub stable: Option<bool>,
+}
+
+/// Fetch the loader versions available for a Minecraft version, newest stable
+/// first (stable entries before beta/alpha builds, then by version number).
+pub fn fetch_loader_list(
+    client: &reqwest::blocking::Client,
+    kind: LoaderKind,
+    mc: &str,
+) -> Result<Vec<LoaderMeta>> {
+    let url = format!("{}/versions/loader/{}", kind.base_url(), mc);
+    let text = client
+        .get(&url)
+        .send()
+        .context(crate::lang::current().failed_fetch_loaders)?
+        .text()
+        .context(crate::lang::current().failed_read_versions)?;
+    let entries: Vec<LoaderListEntry> = serde_json::from_str(&text)
+        .context(crate::lang::current().failed_fetch_loaders)?;
+    let mut metas: Vec<LoaderMeta> = entries.into_iter().map(|e| e.loader).collect();
+    metas.sort_by(|a, b| {
+        let sa = a.stable.unwrap_or(false);
+        let sb = b.stable.unwrap_or(false);
+        sb.cmp(&sa)
+            .then_with(|| crate::util::cmp_version(&b.version, &a.version))
+    });
+    Ok(metas)
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Version {

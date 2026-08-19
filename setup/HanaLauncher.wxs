@@ -6,15 +6,16 @@
   setup can be built without any extra software.
 
   Upgrade flow: a fixed UpgradeCode + MajorUpgrade means installing a newer
-  setup over an older one replaces the program (user data lives in %APPDATA%,
-  so it survives updates).
+  setup over an older one replaces the program. Launcher data (versions,
+  libraries, assets, game saves, logs) lives next to the executable in the
+  install folder, so it survives updates as long as the folder is kept.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
 
   <Product Id="*"
            Name="Hana Launcher"
            Language="1033"
-           Version="1.0.0"
+           Version="1.0.1"
            Manufacturer="StievenW"
            UpgradeCode="3638E624-4ABC-49DB-9DD7-A1CC3B71E5EB">
 
@@ -45,7 +46,7 @@
     </Feature>
 
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFiles64Folder">
+      <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLFOLDER" Name="HanaLauncher" />
       </Directory>
       <Directory Id="ProgramMenuFolder" />
@@ -55,36 +56,80 @@
 
   <Fragment>
     <DirectoryRef Id="INSTALLFOLDER">
-      <Component Id="ProductExe" Guid="*" Win64="yes">
+      <!-- Per-user install folders: components must use an HKCU registry value
+           as their KeyPath (ICE38) and the folders must be in the RemoveFile /
+           RemoveFolder tables (ICE64). RemoveFolder only removes empty folders,
+           so launcher data (versions/, libraries/, ...) survives uninstall. -->
+      <Component Id="ProductExe" Guid="91965BBD-C9D5-4E73-A9B8-22F7F7DE7F50" Win64="yes">
         <File Id="HanaLauncherExe"
-              Source="..\target\release\HanaLauncher.exe"
-              KeyPath="yes" />
+              Source="..\target\release\HanaLauncher.exe" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\Hana\HanaLauncher"
+                       Name="exe"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
       </Component>
 
       <!-- External resource files (icon, background artwork, Monogram fonts).
            Kept out of the exe so the launcher binary stays small. -->
       <Directory Id="RESOURCESDIR" Name="resources">
-        <Component Id="ResourceIcon" Guid="*" Win64="yes">
+        <Component Id="ResourceIcon" Guid="FC95E013-8461-44E4-B4C9-FC8786B97855" Win64="yes">
           <File Id="ResourceIconPng"
-                Source="..\resources\icon.png.x"
-                KeyPath="yes" />
+                Source="..\resources\icon.png.x" />
+          <RegistryValue Root="HKCU"
+                         Key="Software\Hana\HanaLauncher"
+                         Name="res_icon"
+                         Type="integer"
+                         Value="1"
+                         KeyPath="yes" />
         </Component>
-        <Component Id="ResourceBg" Guid="*" Win64="yes">
+        <Component Id="ResourceBg" Guid="E24BB7D0-C381-4730-AD6F-34FA810E4D1A" Win64="yes">
           <File Id="ResourceBgJpg"
-                Source="..\resources\bg.jpg.x"
-                KeyPath="yes" />
+                Source="..\resources\bg.jpg.x" />
+          <RegistryValue Root="HKCU"
+                         Key="Software\Hana\HanaLauncher"
+                         Name="res_bg"
+                         Type="integer"
+                         Value="1"
+                         KeyPath="yes" />
         </Component>
-        <Component Id="ResourceFont" Guid="*" Win64="yes">
+        <Component Id="ResourceFont" Guid="36A0096E-8CDE-4DA3-8F42-DA2390D9B0AE" Win64="yes">
           <File Id="ResourceFontTtf"
-                Source="..\resources\monogram.ttf.x"
-                KeyPath="yes" />
+                Source="..\resources\monogram.ttf.x" />
+          <RegistryValue Root="HKCU"
+                         Key="Software\Hana\HanaLauncher"
+                         Name="res_font"
+                         Type="integer"
+                         Value="1"
+                         KeyPath="yes" />
         </Component>
-        <Component Id="ResourceFontItalic" Guid="*" Win64="yes">
+        <Component Id="ResourceFontItalic" Guid="3E897FF6-484B-478A-8CF6-886D51FD0DD0" Win64="yes">
           <File Id="ResourceFontItalicTtf"
-                Source="..\resources\monogram-italic.ttf.x"
-                KeyPath="yes" />
+                Source="..\resources\monogram-italic.ttf.x" />
+          <RegistryValue Root="HKCU"
+                         Key="Software\Hana\HanaLauncher"
+                         Name="res_font_italic"
+                         Type="integer"
+                         Value="1"
+                         KeyPath="yes" />
         </Component>
       </Directory>
+
+      <Component Id="RemoveInstallDirs" Guid="8657F0AC-1DC5-448F-A4E7-3A99C3EFAF66" Win64="yes">
+        <RemoveFolder Id="RemoveResourcesFolder"
+                      Directory="RESOURCESDIR"
+                      On="uninstall" />
+        <RemoveFolder Id="RemoveInstallFolder"
+                      Directory="INSTALLFOLDER"
+                      On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\Hana\HanaLauncher"
+                       Name="install_dirs"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
     </DirectoryRef>
 
     <DirectoryRef Id="ProgramMenuFolder">
@@ -128,6 +173,7 @@
       <ComponentRef Id="ResourceBg" />
       <ComponentRef Id="ResourceFont" />
       <ComponentRef Id="ResourceFontItalic" />
+      <ComponentRef Id="RemoveInstallDirs" />
     </ComponentGroup>
   </Fragment>
 </Wix>

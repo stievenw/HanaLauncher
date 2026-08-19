@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+﻿use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel as new_channel, Receiver, Sender};
 use std::time::Instant;
@@ -154,7 +154,10 @@ mod win_probe {
 }
 
 const ACCENT: Color32 = Color32::from_rgb(255, 130, 45);
-const ACCENT_SOFT: Color32 = Color32::from_rgba_premultiplied(255, 158, 80, 46);
+/// Subtle "selected / active" highlight: the normal glass colour, slightly
+/// darkened - not the bright orange accent.
+const ACCENT_SOFT: Color32 = Color32::from_rgba_premultiplied(243, 229, 206, 236);
+const ACCENT_SOFT_STROKE: Color32 = Color32::from_rgb(203, 168, 122);
 const PRIMARY_BTN: Color32 = Color32::from_rgb(228, 100, 22);
 const PRIMARY_TEXT: Color32 = Color32::from_rgb(62, 44, 30);
 const OK_GREEN: Color32 = Color32::from_rgb(46, 150, 70);
@@ -223,6 +226,36 @@ fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         .show(ui, add);
 }
 
+/// Formats a Unix timestamp as a local date-time string (`YYYY-MM-DD HH:MM`).
+fn format_expiry_date(unix: i64) -> String {
+    use chrono::{DateTime, Local};
+    DateTime::from_timestamp(unix, 0)
+        .map(|u| u.with_timezone(&Local))
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| Local::now().format("%Y-%m-%d %H:%M").to_string())
+}
+
+/// Builds a compact countdown like `2 hari 3 jam 10 mnt` for the given seconds.
+fn format_time_left(secs: i64, t: &crate::lang::Lang) -> String {
+    if secs <= 0 {
+        return format!("0 {}", t.unit_sec);
+    }
+    let d = secs / 86400;
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    let parts: Vec<String> = [d, h, m, s]
+        .iter()
+        .zip([t.unit_day, t.unit_hour, t.unit_min, t.unit_sec])
+        .filter_map(|(v, unit)| (*v > 0).then(|| format!("{} {}", v, unit)))
+        .collect();
+    if parts.is_empty() {
+        format!("0 {}", t.unit_sec)
+    } else {
+        parts.join(" ")
+    }
+}
+
 enum VersionAction {
     Select(String),
     Install(String),
@@ -260,25 +293,6 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 /// Turn whatever the user picked in the folder dialog into a path usable as a
-/// Java binary: `bin/java.exe` inside a runtime folder, a folder containing
-/// `java.exe`, or the `java.exe` file itself.
-fn normalize_java_pick(picked: std::path::PathBuf) -> PathBuf {
-    if picked.is_file() {
-        return picked;
-    }
-    let bin = picked
-        .join("bin")
-        .join(crate::java::java_binary_name());
-    if bin.is_file() {
-        return bin;
-    }
-    let direct = picked.join(crate::java::java_binary_name());
-    if direct.is_file() {
-        return direct;
-    }
-    picked
-}
-
 /// Build the instance-specific sub folder for a custom game dir. The user
 /// picks a base location; the instance gets its own folder named after it so
 /// multiple instances can share one base without mixing saves.
@@ -332,6 +346,7 @@ struct DeleteDraft {
 /// Draft state for the "create / edit instance" dialog.
 struct InstDraft {
     editing: Option<usize>,
+    is_latest: bool,
     name: String,
     version_id: Option<String>,
     version_search: String,
@@ -350,6 +365,7 @@ impl InstDraft {
     fn new() -> Self {
         Self {
             editing: None,
+            is_latest: false,
             name: String::new(),
             version_id: None,
             version_search: String::new(),
@@ -368,6 +384,7 @@ impl InstDraft {
     fn from_instance(idx: usize, inst: &Instance) -> Self {
         Self {
             editing: Some(idx),
+            is_latest: inst.is_latest,
             name: inst.name.clone(),
             version_id: inst.version_id.clone(),
             version_search: String::new(),
@@ -396,6 +413,10 @@ pub struct HanaApp {
     installed: HashSet<String>,
     /// Custom clients found in the local versions folder (not in the manifest).
     custom_versions: Vec<ManifestVersion>,
+    /// Client mods (Fabric/Quilt) state for the "custom clients" section.
+    loaders_mc: String,
+    fabric_loaders: Vec<crate::minecraft::LoaderMeta>,
+    quilt_loaders: Vec<crate::minecraft::LoaderMeta>,
     search: String,
     versions_tab_downloaded: bool,
 
@@ -417,8 +438,7 @@ pub struct HanaApp {
     need_2fa: bool,
     twofa_input: String,
     device_code: Option<(String, String)>,
-
-    detect_java_msg: Option<(String, String)>,
+    offline_name: String,
 
     inst_dialog: Option<InstDraft>,
     delete_dialog: Option<DeleteDraft>,
@@ -533,6 +553,11 @@ impl HanaApp {
         let root = crate::config::minecraft_root().unwrap_or_else(|_| {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         });
+        // Create the standard launcher folders right away so the install
+        // directory looks like a normal launcher instead of an empty folder.
+        for sub in ["versions", "libraries", "assets", "runtime", "logs"] {
+            let _ = std::fs::create_dir_all(root.join(sub));
+        }
         let _ = std::fs::create_dir_all(&root);
 
         let (tx, rx) = new_channel();
@@ -547,6 +572,9 @@ impl HanaApp {
             latest_release: None,
             installed: HashSet::new(),
             custom_versions: Vec::new(),
+            loaders_mc: String::new(),
+            fabric_loaders: Vec::new(),
+            quilt_loaders: Vec::new(),
             search: String::new(),
             versions_tab_downloaded: false,
             task_active: false,
@@ -563,8 +591,9 @@ impl HanaApp {
             pw_show: false,
             need_2fa: false,
             twofa_input: String::new(),
-            device_code: None,
-            detect_java_msg: None,
+device_code: None,
+            offline_name: String::new(),
+
             inst_dialog: None,
             delete_dialog: None,
             warn_existing,
@@ -657,6 +686,11 @@ impl HanaApp {
                             }
                         }
                     }
+                }
+                TaskEvent::Loaders { mc, fabric, quilt } => {
+                    self.loaders_mc = mc;
+                    self.fabric_loaders = fabric;
+                    self.quilt_loaders = quilt;
                 }
                 TaskEvent::GameStarted(pid) => {
                     self.running_pid = Some(pid);
@@ -913,6 +947,12 @@ impl HanaApp {
             self.toast(ToastKind::Error, t.login_required);
             return;
         };
+        if account.account_type == crate::config::ACCOUNT_TYPE_OFFLINE
+            && !self.has_valid_online()
+        {
+            self.toast(ToastKind::Error, t.offline_locked);
+            return;
+        }
         let req = LaunchRequest { config: self.cfg.clone(), account, version: Some(version_id.clone()) };
         let root = self.root.clone();
         self.start(move |tx, drx| {
@@ -923,67 +963,6 @@ impl HanaApp {
     fn start_refresh_versions(&mut self) {
         self.versions_loaded = true;
         self.start(|tx, drx| crate::tasks::refresh_versions(tx, drx));
-    }
-
-    fn detect_java(&mut self) {
-        let t = self.cfg.t();
-        self.detect_java_msg = None;
-        let inst_ver = self.active_resolved_version();
-        let required = if inst_ver
-            .as_ref()
-            .map(|id| self.installed.contains(id))
-            .unwrap_or(false)
-        {
-            inst_ver
-                .as_ref()
-                .and_then(|id| {
-                    crate::install::load_or_fetch_version(&self.http_client(), &self.root, id).ok()
-                })
-                .map(|v| v.required_java_major())
-                .unwrap_or(8)
-        } else {
-            8
-        };
-
-        let cfg_java = self.cfg.active_instance().and_then(|i| i.java_path.clone());
-        let found = crate::java::detect_java(cfg_java.as_deref(), &self.root);
-        let usable = found.and_then(|p| {
-            let major = crate::java::java_major(&p).unwrap_or(0);
-            if crate::java::java_compatible(major, required) {
-                Some((p, major))
-            } else {
-                crate::java::find_cached_runtime_major(&self.root, required)
-                    .map(|d| d.join("bin").join(crate::java::java_binary_name()))
-                    .and_then(|alt| {
-                        let m = crate::java::java_major(&alt).unwrap_or(0);
-                        if crate::java::java_compatible(m, required) {
-                            Some((alt, m))
-                        } else {
-                            None
-                        }
-                    })
-            }
-        });
-
-        match usable {
-            Some((path, major)) => {
-                if let Some(inst) = self.cfg.active_instance_mut() {
-                    inst.java_path = Some(path.to_string_lossy().into_owned());
-                }
-                let _ = save_config(&self.cfg);
-                self.detect_java_msg = Some(("ok".to_string(), t.java_saved.replace("{}", &major.to_string())));
-                self.toast(
-                    ToastKind::Ok,
-                    t.java_saved.replace("{}", &major.to_string()),
-                );
-            }
-            None => {
-                self.detect_java_msg = Some((
-                    "err".to_string(),
-                    t.java_not_found.replace("{}", &required.to_string()),
-                ));
-            }
-        }
     }
 
     fn active_version_installed(&self) -> bool {
@@ -1524,25 +1503,25 @@ impl HanaApp {
             let t = self.cfg.t();
             let mut close = false;
             let mut submit = false;
-            egui::Window::new(t.twofa_title)
-                .collapsible(false)
-                .resizable(false)
-                .show(&ctx, |ui| {
-                    ui.label(t.twofa_hint);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.twofa_input)
-                            .hint_text("000000")
-                            .desired_width(220.0),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button(t.submit).clicked() {
-                            submit = true;
-                        }
-                        if ui.button(t.cancel).clicked() {
-                            close = true;
-                        }
-                    });
+            egui::Modal::new(egui::Id::new("twofa_modal")).show(&ctx, |ui| {
+                ui.set_width(320.0);
+                ui.label(RichText::new(t.twofa_title).size(15.0).strong());
+                ui.add_space(6.0);
+                ui.label(t.twofa_hint);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.twofa_input)
+                        .hint_text("000000")
+                        .desired_width(220.0),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button(t.submit).clicked() {
+                        submit = true;
+                    }
+                    if ui.button(t.cancel).clicked() {
+                        close = true;
+                    }
                 });
+            });
             if submit {
                 let code = self.twofa_input.trim().to_string();
                 if code.is_empty() {
@@ -1567,14 +1546,28 @@ impl HanaApp {
         if let Some((code, verification_uri)) = self.device_code.clone() {
             let t = self.cfg.t();
             let mut close = false;
-            egui::Window::new(t.verify_win_title)
-                .collapsible(false)
-                .resizable(false)
+            // A proper modal: dims + blocks the rest of the UI. It only closes
+            // through the Cancel button / Escape, never by clicking outside.
+            let modal = egui::Modal::new(egui::Id::new("oauth_modal"))
                 .show(&ctx, |ui| {
+                    ui.set_width(400.0);
+                    ui.label(RichText::new(t.verify_win_title).size(15.0).strong());
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(t.login_ely_account)
+                            .color(TEXT_WEAK)
+                            .size(11.0),
+                    );
+                    ui.add_space(6.0);
                     ui.label(t.verify_page);
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(&code).monospace().size(28.0).color(ACCENT));
+                        ui.label(
+                            RichText::new(&code)
+                                .monospace()
+                                .size(28.0)
+                                .color(ACCENT),
+                        );
                         if ui.button(t.copy).clicked() {
                             ctx.copy_text(code.clone());
                         }
@@ -1592,9 +1585,28 @@ impl HanaApp {
                     });
                     ui.add_space(4.0);
                     ui.label(RichText::new(t.oauth_auto).color(TEXT_WEAK).size(12.0));
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.hyperlink_to(
+                            RichText::new(t.register_ely).size(11.0).color(ACCENT),
+                            crate::util::ELY_REGISTER_URL,
+                        );
+                    });
                 });
-            if close {
+            // Block outside clicks; only Cancel button or Escape closes it.
+            let esc = modal.is_top_modal
+                && !modal.any_popup_open
+                && ctx.input_mut(|i| {
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                });
+            if close || esc {
                 self.device_code = None;
+                // Tell the running login-oauth task to stop, otherwise the
+                // loading spinner stays forever.
+                if let Some(tx) = self.decision_tx.take() {
+                    let _ = tx.send(LaunchDecision::Cancel);
+                }
+                self.toast(ToastKind::Info, t.login_cancelled);
             }
         }
 
@@ -1998,7 +2010,7 @@ impl HanaApp {
                         .fill(if is_selected { GLASS_SOLID } else { GLASS })
                         .stroke(egui::Stroke::new(
                             1.0,
-                            if is_selected { ACCENT } else { BORDER },
+                            if is_selected { ACCENT_SOFT_STROKE } else { BORDER },
                         ))
                         .corner_radius(6.0)
                         .inner_margin(egui::Margin::symmetric(10, 6))
@@ -2047,6 +2059,115 @@ impl HanaApp {
                         });
                 }
             });
+
+        if self.cfg.show_custom_clients {
+            ui.add_space(10.0);
+            card(ui, |ui| {
+                ui.label(RichText::new(t.client_mods).size(9.0).color(TEXT_WEAK));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(t.client_mods_mc);
+                    let releases: Vec<String> = self
+                        .versions
+                        .iter()
+                        .filter(|v| v.kind == "release")
+                        .map(|v| v.id.clone())
+                        .collect();
+                    let mut sel = if self.loaders_mc.is_empty() {
+                        self.latest_stable().unwrap_or_default()
+                    } else {
+                        self.loaders_mc.clone()
+                    };
+                    egui::ComboBox::from_id_salt("client_mods_mc")
+                        .selected_text(RichText::new(&sel).size(13.0).color(TEXT))
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for id in &releases {
+                                ui.selectable_value(&mut sel, id.clone(), id);
+                            }
+                        });
+                    if sel != self.loaders_mc {
+                        self.loaders_mc = sel;
+                        self.fabric_loaders.clear();
+                        self.quilt_loaders.clear();
+                    }
+                    if ui
+                        .add_enabled(!self.task_active, egui::Button::new(t.client_mods_load))
+                        .clicked()
+                    {
+                        let mc = self.loaders_mc.clone();
+                        self.start(move |tx, drx| crate::tasks::refresh_loaders(tx, drx, mc));
+                    }
+                    if self.task_active {
+                        ui.add(egui::Spinner::new().size(14.0).color(ACCENT));
+                    }
+                });
+
+                let mut install_targets: Vec<(crate::minecraft::LoaderKind, String, String)> =
+                    Vec::new();
+                let mc = self.loaders_mc.clone();
+                const MAX: usize = 8;
+                let mut loader_section =
+                    |ui: &mut egui::Ui,
+                     name: &str,
+                     kind: crate::minecraft::LoaderKind,
+                     metas: &[crate::minecraft::LoaderMeta]| {
+                        if metas.is_empty() {
+                            return;
+                        }
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(name).strong().size(12.5));
+                        let prefix = if kind == crate::minecraft::LoaderKind::Fabric {
+                            "fabric-loader"
+                        } else {
+                            "quilt-loader"
+                        };
+                        for meta in metas.iter().take(MAX) {
+                            let id = format!("{prefix}-{}-{}", meta.version, mc);
+                            let installed = self.installed.contains(&id);
+                            ui.horizontal(|ui| {
+                                let label = if meta.stable == Some(false) {
+                                    format!("{}  [beta]", meta.version)
+                                } else {
+                                    meta.version.clone()
+                                };
+                                ui.label(RichText::new(label).size(12.5).color(TEXT));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if installed {
+                                            ui.label(
+                                                RichText::new(t.installed)
+                                                    .color(OK_GREEN)
+                                                    .size(11.0),
+                                            );
+                                        } else if ui
+                                            .add_enabled(
+                                                !self.task_active,
+                                                egui::Button::new(t.pick_version),
+                                            )
+                                            .clicked()
+                                        {
+                                            install_targets
+                                                .push((kind, mc.clone(), meta.version.clone()));
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                    };
+
+                loader_section(ui, "Fabric", crate::minecraft::LoaderKind::Fabric, &self.fabric_loaders);
+                loader_section(ui, "Quilt", crate::minecraft::LoaderKind::Quilt, &self.quilt_loaders);
+
+                for (kind, mc, loader) in install_targets {
+                    let root = self.root.clone();
+                    self.start(move |tx, drx| {
+                        crate::tasks::install_custom_client(tx, drx, kind, mc, loader, root);
+                    });
+                }
+            });
+        }
 
         if let Some(action) = action {
             match action {
@@ -2208,7 +2329,7 @@ impl HanaApp {
                             .fill(if is_active { ACCENT_SOFT } else { GLASS })
                             .stroke(egui::Stroke::new(
                                 1.0,
-                                if is_active { ACCENT } else { BORDER },
+                                if is_active { ACCENT_SOFT_STROKE } else { BORDER },
                             ))
                             .corner_radius(8.0)
                             .inner_margin(egui::Margin::symmetric(12, 9))
@@ -2245,19 +2366,12 @@ impl HanaApp {
                                         };
                                         ui.label(
                                             RichText::new(format!(
-                                                "{ver}  •  {status}  •  {} MB",
+                                                "{ver}  â€¢  {status}  â€¢  {} MB",
                                                 inst.memory_mb
                                             ))
                                             .color(TEXT_WEAK)
                                             .size(11.0),
                                         );
-                                        if inst.is_latest {
-                                            ui.label(
-                                                RichText::new(t.latest_no_edit)
-                                                    .size(10.0)
-                                                    .color(TEXT_WEAK),
-                                            );
-                                        }
                                     });
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
@@ -2281,35 +2395,33 @@ impl HanaApp {
                                                 {
                                                     delete_data = Some(ver.clone());
                                                 }
-                                            } else {
-                                                if ui
+                                            } else if ui
+                                                .add_enabled(
+                                                    !busy,
+                                                    egui::Button::new(t.delete),
+                                                )
+                                                .clicked()
+                                            {
+                                                delete_idx = Some(i);
+                                            }
+                                            if ui
+                                                .add_enabled(
+                                                    !busy,
+                                                    egui::Button::new(t.edit),
+                                                )
+                                                .clicked()
+                                            {
+                                                edit_idx = Some(i);
+                                            }
+                                            if !is_active
+                                                && ui
                                                     .add_enabled(
                                                         !busy,
-                                                        egui::Button::new(t.delete),
+                                                        egui::Button::new(t.select),
                                                     )
                                                     .clicked()
-                                                {
-                                                    delete_idx = Some(i);
-                                                }
-                                                if ui
-                                                    .add_enabled(
-                                                        !busy,
-                                                        egui::Button::new(t.edit),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    edit_idx = Some(i);
-                                                }
-                                                if !is_active
-                                                    && ui
-                                                        .add_enabled(
-                                                            !busy,
-                                                            egui::Button::new(t.select),
-                                                        )
-                                                        .clicked()
-                                                {
-                                                    select_idx = Some(i);
-                                                }
+                                            {
+                                                select_idx = Some(i);
                                             }
                                         },
                                     );
@@ -2395,54 +2507,62 @@ impl HanaApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(t.mc_version);
-                let sel = draft.version_id.clone().unwrap_or_default();
-                let mut new_sel = sel.clone();
-                egui::ComboBox::from_id_salt("inst_dialog_version")
-                    .selected_text(RichText::new(&sel).size(14.0).color(TEXT))
-                    .width(240.0)
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show_ui(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut draft.version_search)
-                                    .hint_text(t.search_versions)
-                                    .desired_width(220.0),
-                            );
-                        });
-                        let filter = draft.version_search.to_lowercase();
-                        let list: Vec<&ManifestVersion> = self
-                            .visible_versions()
-                            .into_iter()
-                            .filter(|v| {
-                                filter.is_empty() || v.id.to_lowercase().contains(&filter)
-                            })
-                            .collect();
-                        const ROW_H: f32 = 24.0;
-                        egui::ScrollArea::vertical()
-                            .max_height(300.0)
-                            .show_rows(ui, ROW_H, list.len(), |ui, range| {
-                                for i in range {
-                                    let v = list[i];
-                                    let kind = if v.kind == "custom" {
-                                        t.kind_custom
-                                    } else if v.kind == "release" {
-                                        "Release"
-                                    } else {
-                                        v.kind.as_str()
-                                    };
-                                    let label = RichText::new(format!("{}  [{}]", v.id, kind))
-                                        .size(13.0)
-                                        .color(TEXT);
-                                    ui.selectable_value(&mut new_sel, v.id.clone(), label);
-                                }
-                            });
-                    });
-                if new_sel != sel {
-                    draft.version_id = Some(new_sel);
-                    egui::Popup::close_id(
-                        ui.ctx(),
-                        egui::Id::new("inst_dialog_version").with("popup"),
+                if draft.is_latest {
+                    ui.label(
+                        RichText::new(t.latest_no_edit)
+                            .size(13.0)
+                            .color(TEXT_WEAK),
                     );
+                } else {
+                    let sel = draft.version_id.clone().unwrap_or_default();
+                    let mut new_sel = sel.clone();
+                    egui::ComboBox::from_id_salt("inst_dialog_version")
+                        .selected_text(RichText::new(&sel).size(14.0).color(TEXT))
+                        .width(240.0)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show_ui(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut draft.version_search)
+                                        .hint_text(t.search_versions)
+                                        .desired_width(220.0),
+                                );
+                            });
+                            let filter = draft.version_search.to_lowercase();
+                            let list: Vec<&ManifestVersion> = self
+                                .visible_versions()
+                                .into_iter()
+                                .filter(|v| {
+                                    filter.is_empty() || v.id.to_lowercase().contains(&filter)
+                                })
+                                .collect();
+                            const ROW_H: f32 = 24.0;
+                            egui::ScrollArea::vertical()
+                                .max_height(300.0)
+                                .show_rows(ui, ROW_H, list.len(), |ui, range| {
+                                    for i in range {
+                                        let v = list[i];
+                                        let kind = if v.kind == "custom" {
+                                            t.kind_custom
+                                        } else if v.kind == "release" {
+                                            "Release"
+                                        } else {
+                                            v.kind.as_str()
+                                        };
+                                        let label = RichText::new(format!("{}  [{}]", v.id, kind))
+                                            .size(13.0)
+                                            .color(TEXT);
+                                        ui.selectable_value(&mut new_sel, v.id.clone(), label);
+                                    }
+                                });
+                        });
+                    if new_sel != sel {
+                        draft.version_id = Some(new_sel);
+                        egui::Popup::close_id(
+                            ui.ctx(),
+                            egui::Id::new("inst_dialog_version").with("popup"),
+                        );
+                    }
                 }
             });
             ui.add_space(4.0);
@@ -2567,13 +2687,22 @@ impl HanaApp {
                 }
             });
         });
-        if modal.should_close() {
+        // Close only via the Cancel button or Escape - a click on the backdrop
+        // must NOT close the dialog (the modal blocks the rest of the UI).
+        let esc = modal.is_top_modal
+            && !modal.any_popup_open
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if esc {
             open = false;
         }
 
         if save {
             let name = draft.name.trim().to_string();
-            if name == crate::config::LATEST_INSTANCE_KEY {
+            let is_latest_edit = draft
+                .editing
+                .map(|idx| self.cfg.instances[idx].is_latest)
+                .unwrap_or(false);
+            if name == crate::config::LATEST_INSTANCE_KEY && !is_latest_edit {
                 self.toast(ToastKind::Error, t.latest_key_reserved);
                 self.inst_dialog = Some(draft);
                 return;
@@ -2595,7 +2724,9 @@ impl HanaApp {
                 let was_active = self.cfg.active_instance.as_deref() == Some(old_name.as_str());
                 let inst = &mut self.cfg.instances[idx];
                 inst.name = name.clone();
-                inst.version_id = draft.version_id.clone();
+                if !inst.is_latest {
+                    inst.version_id = draft.version_id.clone();
+                }
                 inst.memory_mb = draft.memory_mb;
                 inst.java_path = draft.java_path.clone();
                 inst.download_java = draft.download_java;
@@ -2704,41 +2835,117 @@ impl HanaApp {
         }
     }
 
+    /// Whether at least one Ely.by account with a non-expired token exists.
+    /// Offline accounts require this to stay unlocked.
+    fn has_valid_online(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.cfg.accounts.iter().any(|a| {
+            a.account_type != crate::config::ACCOUNT_TYPE_OFFLINE
+                && a.expires_at.map(|e| e > now).unwrap_or(true)
+        })
+    }
+
     fn ui_accounts(&mut self, ui: &mut egui::Ui) {
         let t = self.cfg.t();
         let busy = self.busy();
 
-        // ---- Add account (always visible at the top) ----
+        // ---- Add account (always visible at the top, compact) ----
         ui.label(RichText::new(t.add_account).size(9.0).color(TEXT_WEAK));
         ui.add_space(4.0);
 
+        let online_ok = self.has_valid_online();
+        let any_busy = self.task_active;
+
         card(ui, |ui| {
-            ui.label(RichText::new(t.oauth_title).strong().size(14.0));
-            ui.label(RichText::new(t.oauth_desc).color(TEXT_WEAK).size(11.0));
-            ui.add_space(6.0);
-            if ui
-                .add_enabled(
-                    !self.task_active,
-                    egui::Button::new(
-                        RichText::new(t.login_with_ely)
-                            .size(13.0)
-                            .strong()
-                            .color(PRIMARY_TEXT),
-                    )
-                    .fill(PRIMARY_BTN)
-                    .corner_radius(6.0),
-                )
-                .clicked()
-            {
-                self.start(|tx, drx| crate::tasks::login_oauth(tx, drx));
-            }
+            ui.horizontal(|ui| {
+                // LEFT: Ely.by OAuth login
+                ui.vertical(|ui| {
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(t.login_with_ely).strong().size(12.5));
+                    ui.label(
+                        RichText::new(t.login_ely_account)
+                            .color(TEXT_WEAK)
+                            .size(10.5),
+                    );
+                    ui.add_space(5.0);
+                    if ui
+                        .add_enabled(
+                            !any_busy,
+                            egui::Button::new(
+                                RichText::new(t.ely_oauth)
+                                    .size(13.0)
+                                    .strong()
+                                    .color(PRIMARY_TEXT),
+                            )
+                            .fill(PRIMARY_BTN)
+                            .corner_radius(6.0),
+                        )
+                        .clicked()
+                    {
+                        self.start(|tx, drx| crate::tasks::login_oauth(tx, drx));
+                    }
+                    ui.add_space(4.0);
+                    ui.hyperlink_to(
+                        RichText::new(t.register_ely).size(10.5).color(ACCENT),
+                        crate::util::ELY_REGISTER_URL,
+                    );
+                });
+                ui.separator();
+                // RIGHT: Add offline account. Requires a valid Ely.by account.
+                ui.vertical(|ui| {
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(t.offline_account).strong().size(12.5));
+                    ui.label(
+                        RichText::new(t.offline_desc)
+                            .color(TEXT_WEAK)
+                            .size(10.5),
+                    );
+                    ui.add_space(5.0);
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.offline_name)
+                                .hint_text(t.offline_name)
+                                .desired_width(150.0),
+                        );
+                        if ui
+                            .add_enabled(
+                                online_ok && !any_busy,
+                                egui::Button::new(t.add_offline),
+                            )
+                            .clicked()
+                        {
+                            let name = self.offline_name.trim().to_string();
+                            let valid = (3..=16).contains(&name.len())
+                                && name
+                                    .chars()
+                                    .all(|c| c.is_alphanumeric() || c == '_');
+                            if !valid {
+                                self.toast(ToastKind::Error, t.offline_name_invalid);
+                            } else {
+                                self.offline_name.clear();
+                                self.add_or_replace_account(crate::auth::offline_account(&name));
+                            }
+                        }
+                    });
+                    if !online_ok {
+                        ui.label(
+                            RichText::new(t.offline_locked)
+                                .color(ERR_RED)
+                                .size(10.5),
+                        );
+                    }
+                });
+            });
         });
 
         ui.add_space(8.0);
 
         card(ui, |ui| {
             egui::CollapsingHeader::new(
-                RichText::new(t.password_title).strong().size(14.0),
+                RichText::new(t.password_title).strong().size(13.0),
             )
             .default_open(false)
             .show(ui, |ui| {
@@ -2795,7 +3002,6 @@ impl HanaApp {
             let n = self.cfg.accounts.len();
             let mut remove_idx: Option<usize> = None;
             let mut activate_idx: Option<usize> = None;
-            let mut refresh_idx: Option<usize> = None;
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -2803,21 +3009,27 @@ impl HanaApp {
                     for i in 0..n {
                         let is_active = self.cfg.active_account_index == Some(i);
                         let acc = self.cfg.accounts[i].clone();
+                        let offline_locked = !online_ok
+                            && acc.account_type == crate::config::ACCOUNT_TYPE_OFFLINE;
 
                         egui::Frame::default()
-                            .fill(if is_active { ACCENT_SOFT } else { GLASS })
+                            .fill(if is_active && !offline_locked { ACCENT_SOFT } else { GLASS })
                             .stroke(egui::Stroke::new(
                                 1.0,
-                                if is_active { ACCENT } else { BORDER },
+                                if is_active && !offline_locked {
+                                    ACCENT_SOFT_STROKE
+                                } else {
+                                    BORDER
+                                },
                             ))
                             .corner_radius(8.0)
-                            .inner_margin(egui::Margin::symmetric(12, 9))
+                            .inner_margin(egui::Margin::symmetric(10, 7))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     if let Some(tex) = self.avatars.get(&acc.uuid) {
-                                        ui.image((tex.id(), Vec2::new(38.0, 38.0)));
+                                        ui.image((tex.id(), Vec2::new(34.0, 34.0)));
                                     } else {
-                                        ui.allocate_ui(Vec2::new(38.0, 38.0), |ui| {
+                                        ui.allocate_ui(Vec2::new(34.0, 34.0), |ui| {
                                             ui.centered_and_justified(|ui| {
                                                 ui.label(
                                                     RichText::new(
@@ -2827,7 +3039,7 @@ impl HanaApp {
                                                             .unwrap_or('?')
                                                             .to_string(),
                                                     )
-                                                    .size(15.0)
+                                                    .size(14.0)
                                                     .strong(),
                                                 );
                                             });
@@ -2837,7 +3049,9 @@ impl HanaApp {
                                     ui.vertical(|ui| {
                                         ui.horizontal(|ui| {
                                             ui.label(
-                                                RichText::new(&acc.username).size(14.0).strong(),
+                                                RichText::new(&acc.username)
+                                                    .size(13.5)
+                                                    .strong(),
                                             );
                                             if is_active {
                                                 ui.label(
@@ -2847,44 +3061,54 @@ impl HanaApp {
                                                         .strong(),
                                                 );
                                             }
+                                            let ty = if acc.account_type
+                                                == crate::config::ACCOUNT_TYPE_ELY_OAUTH
+                                            {
+                                                t.ely_oauth
+                                            } else if acc.account_type
+                                                == crate::config::ACCOUNT_TYPE_ELY_PASSWORD
+                                            {
+                                                t.ely_password
+                                            } else {
+                                                t.offline_account
+                                            };
+                                            ui.label(
+                                                RichText::new(ty)
+                                                    .color(TEXT_WEAK)
+                                                    .size(10.5),
+                                            );
                                         });
-                                        let ty = if acc.account_type
-                                            == crate::config::ACCOUNT_TYPE_ELY_OAUTH
-                                        {
-                                            t.ely_oauth
-                                        } else {
-                                            t.ely_password
-                                        };
+                                        if offline_locked {
+                                            ui.label(
+                                                RichText::new(t.offline_locked)
+                                                    .color(ERR_RED)
+                                                    .size(10.5),
+                                            );
+                                        }
                                         if let Some(exp) = acc.expires_at {
                                             let now = std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
                                                 .unwrap_or_default()
                                                 .as_secs() as i64;
-                                            if now >= exp {
-                                                ui.label(
-                                                    RichText::new(format!(
-                                                        "{ty} - {}",
-                                                        t.token_expired
-                                                    ))
-                                                    .color(ERR_RED)
-                                                    .size(11.0),
+                                            let left = exp - now;
+                                            let detail = t
+                                                .token_expires_on
+                                                .replace("{}", &format_expiry_date(exp))
+                                                .replacen(
+                                                    "{}",
+                                                    &format_time_left(left.max(0), t),
+                                                    1,
                                                 );
+                                            let color = if left <= 0 {
+                                                ERR_RED
+                                            } else if left < 86400 {
+                                                Color32::from_rgb(235, 180, 60)
                                             } else {
-                                                let mins = (exp - now) / 60;
-                                                ui.label(
-                                                    RichText::new(format!(
-                                                        "{ty} - {}",
-                                                        t.token_valid_min
-                                                            .replace("{}", &mins.to_string())
-                                                    ))
-                                                    .color(TEXT_WEAK)
-                                                    .size(11.0),
-                                                );
-                                            }
-                                        } else {
+                                                TEXT_WEAK
+                                            };
                                             ui.label(
-                                                RichText::new(ty)
-                                                    .color(TEXT_WEAK)
+                                                RichText::new(detail)
+                                                    .color(color)
                                                     .size(11.0),
                                             );
                                         }
@@ -2898,16 +3122,8 @@ impl HanaApp {
                                             {
                                                 remove_idx = Some(i);
                                             }
-                                            if ui
-                                                .add_enabled(
-                                                    !busy,
-                                                    egui::Button::new(t.refresh_token),
-                                                )
-                                                .clicked()
-                                            {
-                                                refresh_idx = Some(i);
-                                            }
                                             if !is_active
+                                                && !offline_locked
                                                 && ui
                                                     .add_enabled(
                                                         !busy,
@@ -2937,10 +3153,6 @@ impl HanaApp {
                         .replace("{}", &self.cfg.accounts[idx].username),
                 );
             }
-            if let Some(idx) = refresh_idx {
-                let acc = self.cfg.accounts[idx].clone();
-                self.start(move |tx, drx| crate::tasks::refresh_account(tx, drx, acc));
-            }
             if let Some(idx) = remove_idx {
                 self.remove_account(idx);
             }
@@ -2949,11 +3161,12 @@ impl HanaApp {
 
     fn ui_settings(&mut self, ui: &mut egui::Ui) {
         let t = self.cfg.t();
-        let busy = self.busy();
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            card(ui, |ui| {
-                ui.label(RichText::new(t.versions_label).size(9.0).color(TEXT_WEAK));
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                card(ui, |ui| {
+                    ui.label(RichText::new(t.versions_label).size(9.0).color(TEXT_WEAK));
                 ui.add_space(4.0);
                 if ui
                     .checkbox(&mut self.cfg.show_all_versions, t.show_all_versions)
@@ -2972,252 +3185,6 @@ impl HanaApp {
                         .color(TEXT_WEAK)
                         .size(10.5),
                 );
-            });
-
-            ui.add_space(8.0);
-
-            card(ui, |ui| {
-                ui.label(RichText::new(t.java_label).size(9.0).color(TEXT_WEAK));
-                ui.add_space(4.0);
-
-                // Auto vs Manual mode (derived from java_path: None => auto).
-                let auto = self
-                    .cfg
-                    .active_instance()
-                    .map(|i| i.java_path.is_none())
-                    .unwrap_or(true);
-                let mut new_auto = auto;
-                ui.horizontal(|ui| {
-                    ui.label(t.java_mode_label);
-                    egui::ComboBox::from_id_salt("java_mode")
-                        .selected_text(if auto {
-                            t.java_mode_auto
-                        } else {
-                            t.java_mode_manual
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut new_auto, true, t.java_mode_auto);
-                            ui.selectable_value(&mut new_auto, false, t.java_mode_manual);
-                        });
-                });
-                if new_auto != auto {
-                    if let Some(inst) = self.cfg.active_instance_mut() {
-                        inst.java_path = None;
-                    }
-                    let _ = save_config(&self.cfg);
-                }
-                ui.add_space(4.0);
-
-                if new_auto {
-                    let mut dl_java = self
-                        .cfg
-                        .active_instance()
-                        .map(|i| i.download_java)
-                        .unwrap_or(true);
-                    if ui.checkbox(&mut dl_java, t.auto_download_java).changed() {
-                        if let Some(inst) = self.cfg.active_instance_mut() {
-                            inst.download_java = dl_java;
-                        }
-                        let _ = save_config(&self.cfg);
-                    }
-                    ui.label(RichText::new(t.auto_java_desc).size(11.0).color(TEXT_WEAK));
-                    if let Some((kind, msg)) = &self.detect_java_msg {
-                        let color = if kind == "ok" { OK_GREEN } else { ERR_RED };
-                        ui.label(RichText::new(msg).color(color).size(11.0));
-                    }
-                } else {
-                    let java_none = self
-                        .cfg
-                        .active_instance()
-                        .map(|i| i.java_path.is_none())
-                        .unwrap_or(true);
-                    ui.horizontal(|ui| {
-                        ui.label(t.java_path);
-                        let mut path_text = self
-                            .cfg
-                            .active_instance()
-                            .and_then(|i| i.java_path.clone())
-                            .unwrap_or_default();
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut path_text)
-                                .desired_width(240.0)
-                                .hint_text(t.java_path),
-                        );
-                        if resp.changed() {
-                            let trimmed = path_text.trim().to_string();
-                            if let Some(inst) = self.cfg.active_instance_mut() {
-                                inst.java_path = if trimmed.is_empty() {
-                                    None
-                                } else {
-                                    Some(path_text.clone())
-                                };
-                            }
-                            let _ = save_config(&self.cfg);
-                        }
-                        if ui.button(t.browse).clicked() {
-                            if let Some(picked) = rfd::FileDialog::new().pick_folder() {
-                                let normalized = normalize_java_pick(picked);
-                                if let Some(inst) = self.cfg.active_instance_mut() {
-                                    inst.java_path =
-                                        Some(normalized.to_string_lossy().into_owned());
-                                }
-                                let _ = save_config(&self.cfg);
-                            }
-                        }
-                        if ui
-                            .add_enabled(!busy, egui::Button::new(t.detect))
-                            .clicked()
-                        {
-                            self.detect_java();
-                        }
-                        if ui
-                            .add_enabled(!busy && !java_none, egui::Button::new(t.clear))
-                            .clicked()
-                        {
-                            if let Some(inst) = self.cfg.active_instance_mut() {
-                                inst.java_path = None;
-                            }
-                            let _ = save_config(&self.cfg);
-                        }
-                    });
-                    if let Some((kind, msg)) = &self.detect_java_msg {
-                        let color = if kind == "ok" { OK_GREEN } else { ERR_RED };
-                        ui.label(RichText::new(msg).color(color).size(11.0));
-                    }
-                }
-
-                ui.horizontal(|ui| {
-                    let java_none = self
-                        .cfg
-                        .active_instance()
-                        .map(|i| i.java_path.is_none())
-                        .unwrap_or(true);
-                    if ui
-                        .add_enabled(!busy && java_none, egui::Button::new(t.download_java_now))
-                        .clicked()
-                    {
-                        let root = self.root.clone();
-                        let major = self
-                            .cfg
-                            .active_instance()
-                            .and_then(|i| i.version_id.clone())
-                            .and_then(|id| {
-                                crate::install::load_or_fetch_version(
-                                    &self.http_client(),
-                                    &self.root,
-                                    &id,
-                                )
-                                .ok()
-                            })
-                            .map(|v| v.required_java_major())
-                            .unwrap_or(8);
-                        self.start(move |tx, drx| crate::tasks::download_java(tx, drx, root, major));
-                    }
-                    if let Some(ver) = self.cfg.active_instance().and_then(|i| i.version_id.clone()) {
-                        if self.installed.contains(&ver) {
-                            if let Ok(v) = crate::install::load_or_fetch_version(
-                                &self.http_client(),
-                                &self.root,
-                                &ver,
-                            ) {
-                                ui.label(
-                                    RichText::new(
-                                        t.needs_java
-                                            .replace("{}", &v.required_java_major().to_string()),
-                                    )
-                                    .color(TEXT_WEAK)
-                                    .size(11.0),
-                                );
-                            }
-                        }
-                    }
-                });
-            });
-
-            ui.add_space(8.0);
-
-            card(ui, |ui| {
-                ui.label(RichText::new(t.launch_label).size(9.0).color(TEXT_WEAK));
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(
-                        self.cfg
-                            .active_instance()
-                            .map(|i| i.name.clone())
-                            .unwrap_or_else(|| "-".to_string()),
-                    )
-                    .color(TEXT_WEAK)
-                    .size(11.0),
-                );
-                ui.add_space(4.0);
-
-                let mut changed = false;
-                if let Some(inst) = self.cfg.active_instance_mut() {
-                    ui.horizontal(|ui| {
-                        ui.label(t.memory_label);
-                        changed |= ui
-                            .add(
-                                egui::Slider::new(&mut inst.memory_mb, 1024..=16384)
-                                    .text("MB")
-                                    .suffix(" MB"),
-                            )
-                            .changed();
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(t.resolution);
-                        changed |= ui
-                            .add(egui::DragValue::new(&mut inst.width).range(320..=7680))
-                            .changed();
-                        ui.label("x");
-                        changed |= ui
-                            .add(egui::DragValue::new(&mut inst.height).range(240..=4320))
-                            .changed();
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(t.authlib_url_label);
-                        changed |= ui
-                            .add(
-                                egui::TextEdit::singleline(&mut inst.authlib_url)
-                                    .desired_width(200.0)
-                                    .hint_text("ely.by"),
-                            )
-                            .changed();
-                        ui.label(
-                            RichText::new(t.authlib_hint)
-                                .color(TEXT_WEAK)
-                                .size(11.0),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(t.extra_jvm_args_label);
-                        changed |= ui
-                            .add(
-                                egui::TextEdit::singleline(&mut inst.extra_jvm_args)
-                                    .desired_width(320.0)
-                                    .hint_text(t.extra_jvm_args_hint),
-                            )
-                            .changed();
-                    });
-                } else {
-                    ui.label(RichText::new(t.no_instance_selected).color(TEXT_WEAK));
-                }
-
-                if changed {
-                    let _ = save_config(&self.cfg);
-                }
-
-                ui.add_space(6.0);
-                if ui.button(t.reset_defaults).clicked() {
-                    if let Some(inst) = self.cfg.active_instance_mut() {
-                        inst.memory_mb = 2048;
-                        inst.width = 854;
-                        inst.height = 480;
-                        inst.extra_jvm_args = String::new();
-                        inst.authlib_url = "ely.by".to_string();
-                    }
-                    let _ = save_config(&self.cfg);
-                    self.toast(ToastKind::Ok, t.saved);
-                }
             });
 
             ui.add_space(8.0);
@@ -3303,9 +3270,7 @@ impl HanaApp {
                 self.console.clear();
             }
             if ui.button(t.console_save).clicked() {
-                let logs_dir = crate::config::data_root()
-                    .unwrap_or_default()
-                    .join("logs");
+                let logs_dir = self.root.join("logs");
                 let _ = std::fs::create_dir_all(&logs_dir);
                 let path = logs_dir.join(format!("console-{}.log", now_stamp()));
                 if std::fs::write(&path, &self.console).is_ok() {
@@ -3325,9 +3290,7 @@ impl HanaApp {
                 self.toast(ToastKind::Info, t.log_copied);
             }
             if ui.button(t.open_logs_folder).clicked() {
-                let logs_dir = crate::config::data_root()
-                    .unwrap_or_default()
-                    .join("logs");
+                let logs_dir = self.root.join("logs");
                 let _ = std::fs::create_dir_all(&logs_dir);
                 if !open_in_explorer(&logs_dir) {
                     self.toast(
@@ -3355,6 +3318,7 @@ impl HanaApp {
             });
     }
 
+    #[allow(dead_code)]
     fn http_client(&self) -> reqwest::blocking::Client {
         reqwest::blocking::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(20))

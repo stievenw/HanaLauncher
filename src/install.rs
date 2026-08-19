@@ -1,4 +1,5 @@
 ﻿#![allow(dead_code)]
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -8,7 +9,8 @@ use reqwest::blocking::Client;
 
 use crate::download::{download_bytes, download_file, download_with_fallback};
 use crate::minecraft::{
-    parse_lib_name, Library, RuleContext, Version, VersionManifest,
+    parse_lib_name, Arguments, AssetIndex, JavaVersion, Library, LoaderKind,
+    RuleContext, Version, VersionDownloads, VersionManifest,
 };
 use crate::util::{AUTH_LIB_INJECTOR_FALLBACK_URL, AUTH_LIB_INJECTOR_RELEASE_URL};
 use crate::worker::Reporter;
@@ -212,14 +214,141 @@ pub fn load_or_fetch_version(client: &Client, root: &Path, id: &str) -> Result<V
         .with_context(|| lang.failed_download_version.replace("{}", &id))?;
     let version: Version = serde_json::from_slice(&bytes)
         .with_context(|| lang.failed_parse_version.replace("{}", &id))?;
-    if version.inherits_from.is_some() {
-        anyhow::bail!(lang.inherits_unsupported.replace("{}", &version.id));
-    }
     if let Some(parent) = local.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(&local, &bytes)?;
     Ok(version)
+}
+
+/// Download a Fabric/Quilt loader profile JSON into the local versions folder
+/// and return the version id it declares (e.g. `fabric-loader-0.16.14-1.21.4`).
+pub fn fetch_loader_profile(
+    client: &Client,
+    root: &Path,
+    kind: LoaderKind,
+    mc: &str,
+    loader: &str,
+) -> Result<String> {
+    let url = format!(
+        "{}/versions/loader/{}/{}/profile/json",
+        kind.base_url(),
+        mc,
+        loader
+    );
+    let bytes = download_bytes(client, &url)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .context("Profil loader tidak valid (JSON tidak dikenal)")?;
+    let id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Profil loader tidak memiliki id"))?
+        .to_string();
+    let dir = version_dir(root, &id);
+    fs::create_dir_all(&dir)?;
+    fs::write(version_json_path(root, &id), &bytes)?;
+    Ok(id)
+}
+
+/// Resolve a version and all of its parents into a single, fully materialized
+/// `Version`. Client mod profiles (Fabric/Quilt) only carry `id`,
+/// `inheritsFrom`, `mainClass`, extra `arguments` and their own `libraries`;
+/// everything else (assetIndex, downloads, javaVersion, full argument set)
+/// is merged in from the vanilla parent chain.
+pub fn resolve_version(client: &Client, root: &Path, id: &str) -> Result<Version> {
+    let lang = crate::lang::current();
+    let mut chain: Vec<serde_json::Value> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut cur = id.to_string();
+
+    loop {
+        if !seen.insert(cur.clone()) {
+            break;
+        }
+        let local = version_json_path(root, &cur);
+        let raw: serde_json::Value = if local.exists() {
+            serde_json::from_str(&fs::read_to_string(&local)?)
+                .with_context(|| lang.failed_parse_version.replace("{}", &cur))?
+        } else {
+            let manifest = VersionManifest::from_remote(client)?;
+            let entry = manifest
+                .versions
+                .iter()
+                .find(|v| v.id == cur)
+                .ok_or_else(|| anyhow!(lang.version_not_in_manifest.replace("{}", &cur)))?;
+            let bytes = download_bytes(client, &entry.url)
+                .with_context(|| lang.failed_download_version.replace("{}", &cur))?;
+            if let Some(parent) = local.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&local, &bytes)?;
+            serde_json::from_slice(&bytes)
+                .with_context(|| lang.failed_parse_version.replace("{}", &cur))?
+        };
+        let inherits = raw
+            .get("inheritsFrom")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        chain.push(raw);
+        match inherits {
+            Some(parent) => cur = parent,
+            None => break,
+        }
+    }
+
+    // chain[0] = the requested version, chain[last] = the root (a full vanilla
+    // JSON). Start from the root and overlay each closer version.
+    let mut merged: Version =
+        serde_json::from_value(chain.last().expect("chain kosong").clone())?;
+    for raw in chain.iter().rev().skip(1) {
+        if let Some(s) = raw.get("mainClass").and_then(|v| v.as_str()) {
+            merged.main_class = s.to_string();
+        }
+        if let Some(s) = raw.get("id").and_then(|v| v.as_str()) {
+            merged.id = s.to_string();
+        }
+        if let Some(s) = raw.get("type").and_then(|v| v.as_str()) {
+            merged.kind = Some(s.to_string());
+        }
+        if let Some(a) = raw.get("arguments") {
+            if let Ok(args) = serde_json::from_value::<Arguments>(a.clone()) {
+                let base = merged
+                    .arguments
+                    .get_or_insert_with(|| Arguments { game: Vec::new(), jvm: Vec::new() });
+                base.game.extend(args.game);
+                base.jvm.extend(args.jvm);
+            }
+        }
+        if let Some(s) = raw.get("minecraftArguments").and_then(|v| v.as_str()) {
+            merged.minecraft_arguments = Some(s.to_string());
+        }
+        if let Some(l) = raw.get("libraries") {
+            if let Ok(libs) = serde_json::from_value::<Vec<Library>>(l.clone()) {
+                for lib in libs {
+                    if !merged.libraries.iter().any(|x| x.name == lib.name) {
+                        merged.libraries.push(lib);
+                    }
+                }
+            }
+        }
+        if let Some(aj) = raw.get("assetIndex") {
+            if let Ok(a) = serde_json::from_value::<AssetIndex>(aj.clone()) {
+                merged.asset_index = a;
+            }
+        }
+        if let Some(d) = raw.get("downloads") {
+            if let Ok(dd) = serde_json::from_value::<VersionDownloads>(d.clone()) {
+                merged.downloads = dd;
+            }
+        }
+        if let Some(j) = raw.get("javaVersion") {
+            if let Ok(jj) = serde_json::from_value::<JavaVersion>(j.clone()) {
+                merged.java_version = Some(jj);
+            }
+        }
+    }
+    merged.inherits_from = None;
+    Ok(merged)
 }
 
 /// Load a locally installed version JSON only (never contacts the network).
@@ -377,7 +506,7 @@ pub fn install_version(
     version_id: &str,
     reporter: &Reporter,
 ) -> Result<Version> {
-    let version = load_or_fetch_version(client, root, version_id)?;
+    let version = resolve_version(client, root, version_id)?;
     reporter.log(crate::lang::current().installing_version_log.replace("{}", &version.id));
     let ctx = RuleContext::current();
 

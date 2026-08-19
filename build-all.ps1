@@ -11,7 +11,10 @@ param(
     [switch]$InstallCaToThisPc,   # add rootCA.crt to the current user's Trusted Root store
     [switch]$SkipCa               # skip the CA bootstrap check
 )
-$ErrorActionPreference = "Stop"
+# EAP stays "Continue" (not "Stop"): see build-setup.ps1 - under PS 5.1
+# native stderr (cargo/certutil) becomes a terminating RemoteException with
+# EAP=Stop. Failures are caught via explicit $LASTEXITCODE checks.
+$ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $caDir = Join-Path $root "setup\ca"
 $rootCrt = Join-Path $caDir "rootCA.crt"

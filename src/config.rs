@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const ACCOUNT_TYPE_ELY_OAUTH: &str = "ely_oauth";
 pub const ACCOUNT_TYPE_ELY_PASSWORD: &str = "ely_password";
+pub const ACCOUNT_TYPE_OFFLINE: &str = "offline";
 
 pub const LANG_ID: &str = "id";
 pub const LANG_EN: &str = "en";
@@ -302,8 +303,25 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(data_root()?.join("config.json"))
 }
 
+/// Portable launcher layout: the Minecraft data (versions/, libraries/,
+/// assets/, runtime/, game folders and logs/) lives next to the executable,
+/// so the installation folder looks like a normal launcher. If the exe folder
+/// is not writable (e.g. Program Files without admin rights) the data root
+/// falls back to AppData, otherwise version installs fail with
+/// "Access is denied (os error 5)".
 pub fn minecraft_root() -> Result<PathBuf> {
-    Ok(data_root()?.join("minecraft"))
+    let exe = std::env::current_exe()?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!(crate::lang::current().no_data_dir))?;
+    let dir = dir.to_path_buf();
+    let probe = dir.join(".hana-write-test");
+    if std::fs::write(&probe, b"").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        Ok(dir)
+    } else {
+        data_root()
+    }
 }
 
 /// The folder used by the official Minecraft launcher (`~/.minecraft`).

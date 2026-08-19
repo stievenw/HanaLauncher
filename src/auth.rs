@@ -1,4 +1,5 @@
 ﻿#![allow(dead_code)]
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -7,12 +8,31 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::config::{Account, ACCOUNT_TYPE_ELY_OAUTH, ACCOUNT_TYPE_ELY_PASSWORD};
+use crate::config::{
+    Account, ACCOUNT_TYPE_ELY_OAUTH, ACCOUNT_TYPE_ELY_PASSWORD, ACCOUNT_TYPE_OFFLINE,
+};
 use crate::util::{
     DEVICE_GRANT_TYPE, ELY_CLIENT_ID, OAUTH_DEVICE_CODE_URL, OAUTH_INFO_URL, OAUTH_SCOPES,
     OAUTH_TOKEN_URL, YGGDRASIL_AUTH_URL, YGGDRASIL_REFRESH_URL,
 };
-use crate::worker::{TaskCtx, TaskEvent};
+use crate::worker::{LaunchDecision, TaskCtx, TaskEvent};
+
+/// Marker string used by workers to signal the user cancelled the task.
+pub const CANCELLED_MARKER: &str = "__CANCELLED__";
+
+/// Build an offline-mode account from a player name (classic offline UUID).
+pub fn offline_account(username: &str) -> Account {
+    let uuid = Uuid::new_v3(&Uuid::nil(), username.as_bytes()).to_string();
+    Account {
+        uuid,
+        username: username.to_string(),
+        access_token: Uuid::new_v4().to_string(),
+        refresh_token: None,
+        client_token: None,
+        account_type: ACCOUNT_TYPE_OFFLINE.to_string(),
+        expires_at: None,
+    }
+}
 
 #[derive(Debug, Clone)]
 struct OAuthTokens {
@@ -57,6 +77,7 @@ struct DeviceCodeResponse {
 /// error / timeout occurs.
 fn poll_device_tokens(
     client: &Client,
+    decisions: &Receiver<LaunchDecision>,
     device_code: &str,
     interval: u64,
     expires_in: u64,
@@ -64,6 +85,9 @@ fn poll_device_tokens(
     let deadline = SystemTime::now() + Duration::from_secs(expires_in.max(60));
     let mut interval = interval.max(1);
     loop {
+        if matches!(decisions.try_recv(), Ok(LaunchDecision::Cancel)) {
+            bail!(CANCELLED_MARKER);
+        }
         if SystemTime::now() > deadline {
             bail!(crate::lang::current().code_expired);
         }
@@ -176,7 +200,7 @@ pub fn login_oauth_device(ctx: &TaskCtx) -> Result<Account> {
         verification_uri: dev.verification_uri.clone(),
     });
 
-    let tokens = poll_device_tokens(&ctx.client, &dev.device_code, dev.interval, dev.expires_in)?;
+    let tokens = poll_device_tokens(&ctx.client, &ctx.decisions, &dev.device_code, dev.interval, dev.expires_in)?;
     ctx.reporter.log(crate::lang::current().token_received_fetching_profile);
 
     let info = fetch_user_info(&ctx.client, &tokens.access_token)?;

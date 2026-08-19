@@ -12,7 +12,11 @@
 #
 # Run from the project root:
 #   powershell -ExecutionPolicy Bypass -File setup\build-setup.ps1
-$ErrorActionPreference = "Stop"
+# NOTE: EAP must stay "Continue", not "Stop": under PowerShell 5.1 a native
+# command writing to stderr (cargo prints "Compiling ..." there) becomes a
+# terminating RemoteException with EAP=Stop, aborting the whole build.
+# Failures are detected via the explicit $LASTEXITCODE checks below instead.
+$ErrorActionPreference = "Continue"
 
 $root = Split-Path -Parent $PSScriptRoot
 $release = Join-Path $root "target\release\HanaLauncher.exe"

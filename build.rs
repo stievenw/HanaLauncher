@@ -10,8 +10,8 @@ fn main() {
         res.set("FileDescription", "Hana Launcher - Minecraft Launcher");
         res.set("OriginalFilename", "HanaLauncher.exe");
         res.set("LegalCopyright", "Copyright (c) 2026 Hanakama");
-        res.set_version_info(winresource::VersionInfo::FILEVERSION, 0x0001000000000000);
-        res.set_version_info(winresource::VersionInfo::PRODUCTVERSION, 0x0001000000000000);
+        res.set_version_info(winresource::VersionInfo::FILEVERSION, 0x0001000000010000);
+        res.set_version_info(winresource::VersionInfo::PRODUCTVERSION, 0x0001000000010000);
         if let Err(e) = res.compile() {
             println!("cargo:warning=winresource failed: {e}");
         }

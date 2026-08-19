@@ -1,6 +1,6 @@
 [package]
 name = "hana_launcher"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 
 [[bin]]
@@ -16,6 +16,7 @@ strip = true
 
 [dependencies]
 anyhow = "1.0.104"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories = "6.0.0"
 eframe = "0.36.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
@@ -25,7 +26,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha1 = "0.11.0"
 sha2 = "0.11.0"
-uuid = { version = "1.24.1", features = ["v4"] }
+uuid = { version = "1.24.1", features = ["v3", "v4"] }
 webbrowser = "1.2.4"
 zip = "8.6.0"
 
