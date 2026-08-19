@@ -335,8 +335,6 @@ struct InstDraft {
     height: u32,
     extra_jvm_args: String,
     authlib_url: String,
-    use_default_directory: bool,
-    game_dir: Option<String>,
 }
 
 impl InstDraft {
@@ -354,8 +352,6 @@ impl InstDraft {
             height: 480,
             extra_jvm_args: String::new(),
             authlib_url: "ely.by".to_string(),
-            use_default_directory: true,
-            game_dir: None,
         }
     }
 
@@ -373,8 +369,6 @@ impl InstDraft {
             height: inst.height,
             extra_jvm_args: inst.extra_jvm_args.clone(),
             authlib_url: inst.authlib_url.clone(),
-            use_default_directory: inst.use_default_directory,
-            game_dir: inst.game_dir.clone(),
         }
     }
 }
@@ -708,14 +702,16 @@ device_code: None,
         }
     }
 
-    /// The game directory (versions/libraries/assets/runtime + saves/mods) of the
-    /// active instance. Falls back to the launcher's own folder when no
-    /// instance is selected.
+    /// The global Launcher Directory (versions/libraries/assets/runtime +
+    /// saves/mods). Falls back to the launcher's own folder when no config
+    /// resolves it.
     fn instance_root(&self) -> PathBuf {
-        self.cfg
-            .active_instance()
-            .map(|i| i.instance_dir())
-            .unwrap_or_else(|| self.root.clone())
+        let dir = self.cfg.launcher_dir();
+        if dir.as_os_str().is_empty() {
+            self.root.clone()
+        } else {
+            dir
+        }
     }
 
     fn refresh_installed(&mut self) {
@@ -879,7 +875,7 @@ device_code: None,
         // the user whether to update first).
         if !inst.is_latest && !self.installed.contains(&version_id) {
             self.toast(ToastKind::Info, t.installing_version);
-            let root = inst.instance_dir();
+            let root = self.cfg.launcher_dir();
             self.start(move |tx, drx| crate::tasks::install_version(tx, drx, version_id, root));
             return;
         }
@@ -895,7 +891,7 @@ device_code: None,
             return;
         }
         let req = LaunchRequest { config: self.cfg.clone(), account, version: Some(version_id.clone()) };
-        let root = inst.instance_dir();
+        let root = self.cfg.launcher_dir();
         self.start(move |tx, drx| {
             crate::tasks::launch_game(tx, drx, req, root);
         });
@@ -962,6 +958,31 @@ device_code: None,
             .iter()
             .filter(|v| self.version_visible(v))
             .collect()
+    }
+
+    /// Look up a manifest version by id.
+    fn manifest_version(&self, id: &str) -> Option<&ManifestVersion> {
+        self.versions.iter().find(|v| v.id == id)
+    }
+
+    /// All versions shown on the versions page: the official manifest versions
+    /// plus every version installed in the Launcher Directory (created by this
+    /// launcher, the official Minecraft launcher, or any other launcher).
+    fn display_version_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for v in self.visible_versions() {
+            ids.push(v.id.clone());
+            seen.insert(v.id.clone());
+        }
+        let mut installed: Vec<String> = self.installed.iter().cloned().collect();
+        installed.sort();
+        for id in installed {
+            if seen.insert(id.clone()) {
+                ids.push(id);
+            }
+        }
+        ids
     }
 
     // ------------------------------------------------------------------ drawing
@@ -1896,7 +1917,7 @@ device_code: None,
             return;
         }
 
-        if self.versions.is_empty() {
+        if self.versions.is_empty() && self.installed.is_empty() {
             ui.add_space(30.0);
             ui.centered_and_justified(|ui| {
                 ui.label(
@@ -1914,11 +1935,11 @@ device_code: None,
         let filter = self.search.to_lowercase();
         ui.add_space(4.0);
 
-        let list = self.visible_versions();
+        let list = self.display_version_ids();
         let rows: Vec<usize> = (0..list.len())
             .filter(|&i| {
-                let v = list[i];
-                filter.is_empty() || v.id.to_lowercase().contains(&filter)
+                let id = &list[i];
+                filter.is_empty() || id.to_lowercase().contains(&filter)
             })
             .collect();
 
@@ -1930,20 +1951,24 @@ device_code: None,
             .show_rows(ui, ROW_H, rows.len(), |ui, range| {
                 for i in range {
                     let idx = rows[i];
-                    let v = list[idx];
-                    let installed = self.installed.contains(&v.id);
+                    let id = &list[idx];
+                    let installed = self.installed.contains(id.as_str());
+                    let kind = self
+                        .manifest_version(id)
+                        .map(|v| v.kind.as_str())
+                        .unwrap_or("installed");
                     let is_latest_active = self
                         .cfg
                         .active_instance()
                         .map(|i| i.is_latest)
                         .unwrap_or(true);
                     let is_selected = if is_latest_active {
-                        self.active_resolved_version().as_deref() == Some(v.id.as_str())
+                        self.active_resolved_version().as_deref() == Some(id.as_str())
                     } else {
                         self.cfg
                             .active_instance()
                             .and_then(|inst| inst.version_id.as_deref())
-                            == Some(v.id.as_str())
+                            == Some(id.as_str())
                     };
 
                     egui::Frame::default()
@@ -1957,13 +1982,13 @@ device_code: None,
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.vertical(|ui| {
-                                    ui.label(RichText::new(&v.id).size(14.0).strong());
-                                    let kind_color = match v.kind.as_str() {
+                                    ui.label(RichText::new(id).size(14.0).strong());
+                                    let kind_color = match kind {
                                         "release" => OK_GREEN,
                                         "snapshot" => WARN_YELLOW,
                                         _ => Color32::from_gray(170),
                                     };
-                                    ui.label(RichText::new(&v.kind).size(10.0).color(kind_color));
+                                    ui.label(RichText::new(kind).size(10.0).color(kind_color));
                                 });
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
@@ -1982,7 +2007,7 @@ device_code: None,
                                                 )
                                                 .clicked()
                                             {
-                                                action = Some(VersionAction::Select(v.id.clone()));
+                                                action = Some(VersionAction::Select(id.clone()));
                                             }
                                             if ui
                                                 .add_enabled(
@@ -1991,7 +2016,7 @@ device_code: None,
                                                 )
                                                 .clicked()
                                             {
-                                                action = Some(VersionAction::Repair(v.id.clone()));
+                                                action = Some(VersionAction::Repair(id.clone()));
                                             }
                                         } else if ui
                                             .add_enabled(
@@ -2000,7 +2025,7 @@ device_code: None,
                                             )
                                             .clicked()
                                         {
-                                            action = Some(VersionAction::Install(v.id.clone()));
+                                            action = Some(VersionAction::Install(id.clone()));
                                         }
                                     },
                                 );
@@ -2290,12 +2315,11 @@ device_code: None,
                     idx,
                     name: inst.name.clone(),
                     also_folder: false,
-                    deletable: inst.game_dir_deletable(),
+                    deletable: false,
                 });
             }
-            if let Some(idx) = open_folder_idx {
-                let inst = &self.cfg.instances[idx];
-                let dir = inst.instance_dir();
+            if open_folder_idx.is_some() {
+                let dir = self.cfg.launcher_dir();
                 let _ = std::fs::create_dir_all(&dir);
                 if !open_in_explorer(&dir) {
                     self.toast(
@@ -2361,11 +2385,11 @@ device_code: None,
                                 );
                             });
                             let filter = draft.version_search.to_lowercase();
-                            let list: Vec<&ManifestVersion> = self
-                                .visible_versions()
+                            let list: Vec<String> = self
+                                .display_version_ids()
                                 .into_iter()
-                                .filter(|v| {
-                                    filter.is_empty() || v.id.to_lowercase().contains(&filter)
+                                .filter(|id| {
+                                    filter.is_empty() || id.to_lowercase().contains(&filter)
                                 })
                                 .collect();
                             const ROW_H: f32 = 24.0;
@@ -2373,16 +2397,21 @@ device_code: None,
                                 .max_height(300.0)
                                 .show_rows(ui, ROW_H, list.len(), |ui, range| {
                                     for i in range {
-                                        let v = list[i];
-                                        let kind = if v.kind == "release" {
-                                            "Release"
-                                        } else {
-                                            v.kind.as_str()
-                                        };
-                                        let label = RichText::new(format!("{}  [{}]", v.id, kind))
+                                        let id = &list[i];
+                                        let kind = self
+                                            .manifest_version(id)
+                                            .map(|v| {
+                                                if v.kind == "release" {
+                                                    "Release".to_string()
+                                                } else {
+                                                    v.kind.clone()
+                                                }
+                                            })
+                                            .unwrap_or_else(|| "installed".to_string());
+                                        let label = RichText::new(format!("{id}  [{kind}]"))
                                             .size(13.0)
                                             .color(TEXT);
-                                        ui.selectable_value(&mut new_sel, v.id.clone(), label);
+                                        ui.selectable_value(&mut new_sel, id.clone(), label);
                                     }
                                 });
                         });
@@ -2449,41 +2478,13 @@ device_code: None,
                 );
             });
             ui.add_space(8.0);
-            ui.label(RichText::new(t.game_dir_label).strong().size(13.0));
-            ui.checkbox(&mut draft.use_default_directory, t.use_default_directory);
-            if !draft.use_default_directory {
-                ui.horizontal(|ui| {
-                    ui.label(t.game_dir_path_label);
-                    let path = draft.game_dir.get_or_insert_with(String::new);
-                    ui.add(
-                        egui::TextEdit::singleline(path).desired_width(180.0),
-                    );
-                    if ui.button(t.browse_folder).clicked() {
-                        if let Some(picked) = rfd::FileDialog::new()
-                            .set_title(t.browse_folder)
-                            .pick_folder()
-                        {
-                            draft.game_dir = Some(picked.to_string_lossy().into_owned());
-                        }
-                    }
-                    if ui.button(t.clear).clicked() {
-                        draft.game_dir = None;
-                    }
-                });
-            }
-            let root_show = {
-                let mut inst = Instance::new(draft.name.clone());
-                inst.use_default_directory = draft.use_default_directory;
-                inst.game_dir = draft.game_dir.clone();
-                inst.instance_dir()
-            };
             ui.label(
-                RichText::new(t.game_dir_current.replace("{}", &root_show.to_string_lossy()))
+                RichText::new(t.launcher_dir_current.replace("{}", &self.cfg.launcher_dir().to_string_lossy()))
                     .color(TEXT_WEAK)
                     .size(10.5),
             );
             ui.label(
-                RichText::new(t.game_dir_hint)
+                RichText::new(t.launcher_dir_hint)
                     .color(TEXT_WEAK)
                     .size(10.5),
             );
@@ -2544,8 +2545,6 @@ device_code: None,
                 inst.height = draft.height;
                 inst.extra_jvm_args = draft.extra_jvm_args.clone();
                 inst.authlib_url = draft.authlib_url.clone();
-                inst.use_default_directory = draft.use_default_directory;
-                inst.game_dir = draft.game_dir.clone();
                 if was_active {
                     self.cfg.active_instance = Some(name);
                 }
@@ -2560,8 +2559,6 @@ device_code: None,
                 inst.height = draft.height;
                 inst.extra_jvm_args = draft.extra_jvm_args;
                 inst.authlib_url = draft.authlib_url;
-                inst.use_default_directory = draft.use_default_directory;
-                inst.game_dir = draft.game_dir;
                 let idx = self.cfg.instances.len();
                 self.cfg.instances.push(inst);
                 self.cfg.active_instance = Some(self.cfg.instances[idx].name.clone());
@@ -2627,7 +2624,7 @@ device_code: None,
             let was_active =
                 self.cfg.active_instance.as_deref() == Some(draft.name.as_str());
             if draft.also_folder && draft.deletable {
-                let dir = self.cfg.instances[draft.idx].instance_dir();
+                let dir = self.cfg.launcher_dir();
                 if dir.exists() {
                     let _ = std::fs::remove_dir_all(&dir);
                 }
@@ -3047,6 +3044,37 @@ device_code: None,
                 {
                     let _ = save_config(&self.cfg);
                 }
+            });
+
+            ui.add_space(8.0);
+
+            card(ui, |ui| {
+                ui.label(RichText::new(t.launcher_dir_label).size(9.0).color(TEXT_WEAK));
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(t.launcher_dir_current.replace("{}", &self.cfg.launcher_dir().to_string_lossy()))
+                        .color(TEXT_WEAK)
+                        .size(10.5),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t.open_folder).clicked() {
+                        let dir = self.cfg.launcher_dir();
+                        let _ = std::fs::create_dir_all(&dir);
+                        if !open_in_explorer(&dir) {
+                            self.toast(
+                                ToastKind::Error,
+                                t.open_failed.replace("{}", &dir.to_string_lossy()),
+                            );
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(t.launcher_dir_hint)
+                        .color(TEXT_WEAK)
+                        .size(10.5),
+                );
             });
 
             ui.add_space(8.0);

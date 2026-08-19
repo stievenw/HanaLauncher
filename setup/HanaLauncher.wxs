@@ -23,7 +23,7 @@
   <Product Id="B4A9D1C8-6E3F-4A2B-9C7E-5F0D8A1B2C3D"
            Name="Hana Launcher"
            Language="1033"
-           Version="1.0.4"
+           Version="1.0.5"
            Manufacturer="StievenW"
            UpgradeCode="3638E624-4ABC-49DB-9DD7-A1CC3B71E5EB">
 
@@ -44,8 +44,133 @@
     <Property Id="ARPPRODUCTICON" Value="app.ico" />
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <!-- Public property (uppercase) passed from the UI to the elevated server;
+         marked Secure so it is never stripped. Value is set by InitLauncherDir
+         before the dialogs show. -->
+    <Property Id="LAUNCHER_DIRECTORY" Secure="yes" />
     <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+    <WixVariable Id="WixUIBannerBitmap" Value="WixUI_Bmp_Banner" />
     <UIRef Id="WixUI_InstallDir" />
+
+    <!-- Launcher Directory selection page inserted between InstallDirDlg and
+         VerifyReadyDlg. The publish below (same Order as the built-in
+         NewDialog to VerifyReadyDlg) is authored after the UI extension's rows,
+         so it fires first and the built-in navigation is skipped. -->
+    <UI>
+      <Dialog Id="LauncherDirDlg" Width="370" Height="270" Title="Launcher Directory">
+        <Control Id="BannerBitmap"
+                 Type="Bitmap"
+                 X="0" Y="0" Width="370" Height="44"
+                 TabSkip="no"
+                 Text="!(wix.WixUIBannerBitmap)" />
+        <Control Id="Title"
+                 Type="Text"
+                 X="15" Y="6" Width="340" Height="15"
+                 TabSkip="no"
+                 Text="Launcher Directory" />
+        <Control Id="Description"
+                 Type="Text"
+                 X="25" Y="23" Width="280" Height="15"
+                 TabSkip="no"
+                 Text="Choose the folder where launcher data is stored (versions, accounts, settings). Default is the .minecraft folder." />
+        <Control Id="BannerLine"
+                 Type="Line"
+                 X="0" Y="44" Width="370" Height="0"
+                 TabSkip="no" />
+        <Control Id="FolderLabel"
+                 Type="Text"
+                 X="20" Y="60" Width="150" Height="15"
+                 TabSkip="no"
+                 Text="Launcher Directory:" />
+        <Control Id="FolderEdit"
+                 Type="Edit"
+                 X="20" Y="80" Width="320" Height="18"
+                 Property="LAUNCHER_DIRECTORY"
+                 Indirect="no" />
+        <Control Id="Browse"
+                 Type="PushButton"
+                 X="304" Y="103" Width="56" Height="17"
+                 Text="Browse...">
+          <Publish Event="SpawnDialog" Value="LauncherDirBrowseDlg" Order="1">1</Publish>
+        </Control>
+        <Control Id="Back"
+                 Type="PushButton"
+                 X="180" Y="243" Width="56" Height="17"
+                 Text="&lt; Back">
+          <Publish Event="NewDialog" Value="InstallDirDlg" Order="1">1</Publish>
+        </Control>
+        <Control Id="Next"
+                 Type="PushButton"
+                 X="236" Y="243" Width="56" Height="17"
+                 Default="yes"
+                 Text="Next &gt;">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="1">1</Publish>
+        </Control>
+        <Control Id="Cancel"
+                 Type="PushButton"
+                 X="304" Y="243" Width="56" Height="17"
+                 Cancel="yes"
+                 Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg" Order="1">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Dialog Id="LauncherDirBrowseDlg"
+              Width="370"
+              Height="270"
+              Title="Browse for Folder"
+              TrackDiskSpace="yes">
+        <Control Id="BannerBitmap"
+                 Type="Bitmap"
+                 X="0" Y="0" Width="370" Height="44"
+                 TabSkip="no"
+                 Text="!(wix.WixUIBannerBitmap)" />
+        <Control Id="Title"
+                 Type="Text"
+                 X="15" Y="6" Width="340" Height="15"
+                 TabSkip="no"
+                 Text="Launcher Directory" />
+        <Control Id="Description"
+                 Type="Text"
+                 X="25" Y="23" Width="280" Height="15"
+                 TabSkip="no"
+                 Text="Choose the Launcher Directory folder." />
+        <Control Id="BannerLine"
+                 Type="Line"
+                 X="0" Y="44" Width="370" Height="0"
+                 TabSkip="no" />
+        <Control Id="FolderLabel"
+                 Type="Text"
+                 X="20" Y="60" Width="150" Height="15"
+                 TabSkip="no"
+                 Text="Launcher Directory:" />
+        <Control Id="PathEdit"
+                 Type="PathEdit"
+                 X="20" Y="80" Width="320" Height="18"
+                 Property="LAUNCHER_DIRECTORY"
+                 Indirect="no" />
+        <Control Id="OK"
+                 Type="PushButton"
+                 X="304" Y="243" Width="56" Height="17"
+                 Default="yes"
+                 Text="OK">
+          <Publish Event="EndDialog" Value="Return" Order="1">1</Publish>
+        </Control>
+        <Control Id="Cancel"
+                 Type="PushButton"
+                 X="240" Y="243" Width="56" Height="17"
+                 Cancel="yes"
+                 Text="Cancel">
+          <Publish Event="EndDialog" Value="Return" Order="1">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="InstallDirDlg"
+               Control="Next"
+               Event="NewDialog"
+               Value="LauncherDirDlg"
+               Order="4">WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID="1"</Publish>
+    </UI>
 
     <!-- User data folder (%APPDATA%\Hana\HanaLauncher) is wiped on a FULL
          uninstall so a reinstall starts completely clean. The cleanup runs
@@ -60,6 +185,22 @@
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
+
+    <!-- Launcher Directory wizard page: prefilled with the default .minecraft
+         path so the standard folder-select page already points at it. The
+         chosen folder is written to HKCU\Software\Hana\HanaLauncher and the
+         launcher reads it on first run. Type 51 runs after CostFinalize so
+         [AppDataFolder] is resolved. -->
+    <CustomAction Id="InitLauncherDir"
+                  Property="LAUNCHER_DIRECTORY"
+                  Value="[AppDataFolder].minecraft" />
+
+    <InstallUISequence>
+      <!-- Sequence 1005 sits between CostFinalize (1000, resolves AppDataFolder)
+           and WelcomeDlg (1298). Referencing WelcomeDlg by name here pulls in the
+           WixUI_Advanced fragment, so a numeric sequence is used instead. -->
+      <Custom Action="InitLauncherDir" Sequence="1005" />
+    </InstallUISequence>
 
     <InstallExecuteSequence>
       <Custom Action="SetRemoveDataCmd"
@@ -178,6 +319,18 @@
                        Value="1"
                        KeyPath="yes" />
       </Component>
+
+      <!-- Launcher Directory chosen in the setup wizard is persisted here so
+           the launcher can read it on first run (see Config::setup_launcher_dir).
+           Empty value (or missing) means the default .minecraft folder. -->
+      <Component Id="WriteLauncherDir" Guid="E9C6A1F4-8B2D-4E70-A1C5-3D9F6B0A2E81" Win64="yes">
+        <RegistryValue Root="HKCU"
+                       Key="Software\Hana\HanaLauncher"
+                       Name="launcher_directory"
+                       Type="string"
+                       Value="[LAUNCHER_DIRECTORY]"
+                       KeyPath="yes" />
+      </Component>
     </DirectoryRef>
 
     <DirectoryRef Id="ProgramMenuFolder">
@@ -223,6 +376,7 @@
       <ComponentRef Id="ResourceFont" />
       <ComponentRef Id="ResourceFontItalic" />
       <ComponentRef Id="RemoveInstallDirs" />
+      <ComponentRef Id="WriteLauncherDir" />
     </ComponentGroup>
   </Fragment>
 </Wix>

@@ -5,7 +5,7 @@ use std::path::Path;
 use sha1::{Digest, Sha1};
 
 pub const LAUNCHER_NAME: &str = "HanaLauncher";
-pub const LAUNCHER_VERSION: &str = "1.0.4";
+pub const LAUNCHER_VERSION: &str = "1.0.5";
 
 /// Default launcher brand (Legacy Launcher style), overridable via `--brand`.
 pub const DEFAULT_BRAND: &str = "hana";
@@ -36,7 +36,7 @@ pub const AUTH_LIB_INJECTOR_FALLBACK_URL: &str =
 pub const OAUTH_SCOPES: &str = "account_info account_email minecraft_server_session offline_access";
 
 /// Hardcoded Ely.by application Client ID (Desktop application, no secret).
-pub const ELY_CLIENT_ID: &str = "hanalauncher";
+pub const ELY_CLIENT_ID: &str = "hanalauncher1";
 
 pub fn hex(data: &[u8]) -> String {
     data.iter().map(|b| format!("{:02x}", b)).collect()
