@@ -9,7 +9,13 @@
 //!      settings and cache - plus any launcher data in %LOCALAPPDATA%\Hana
 //!   3. remove the HKCU\Software\Hana registry keys
 //!   4. run `msiexec /x` WITH the standard UI (confirmation + progress bar)
-//!   5. delete the install folder (including this exe) via a detached process
+//!   5. remove only the launcher's own program files
+//!
+//! SAFETY: uninstall removes the launcher's program files and its own config
+//! data only. The install folder is the user's global .minecraft folder (the
+//! setup default) and is preserved completely - saves, worlds, mods, versions,
+//! libraries, assets, runtime and everything else (including data written by
+//! the official Mojang launcher) survive uninstall.
 
 use std::env;
 use std::os::windows::process::CommandExt;
@@ -57,8 +63,8 @@ fn main() {
     run_quiet("reg", &["delete", "HKCU\\Software\\Hana", "/f"]);
 
     // 4. run the MSI uninstall WITH the standard Windows Installer UI
-    //    (confirmation dialog + progress). Also wipes AppData via
-    //    RemoveFolderEx. Runs synchronously so the user sees the wizard.
+    //    (confirmation dialog + progress). Runs synchronously so the user
+    //    sees the wizard.
     let _ = Command::new("msiexec")
         .args(["/x", PRODUCT_CODE, "/norestart"])
         .status();

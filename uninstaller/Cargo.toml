@@ -1,0 +1,19 @@
+[package]
+name = "hana_uninstaller"
+version = "1.0.7"
+edition = "2024"
+build = "build.rs"
+
+# Standalone uninstaller embedded into the install root (see HanaLauncher.wxs).
+# It is a separate crate so it gets its own version resource metadata: Task
+# Manager / Explorer then shows it as "Hana Launcher - Uninstaller" instead of
+# mistaking it for the main launcher. Uninstall is intentionally destructive:
+# it only removes the launcher's own program files + user config and NEVER
+# touches the rest of the .minecraft folder (versions, libraries, assets,
+# runtime, saves/worlds from the Mojang launcher survive).
+[[bin]]
+name = "uninstall"
+path = "src/main.rs"
+
+[build-dependencies]
+winresource = "0.1"

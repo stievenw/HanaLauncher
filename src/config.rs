@@ -191,7 +191,7 @@ impl Default for Config {
             default_authlib_url: default_authlib(),
             default_download_java: default_dl_java(),
             language: default_lang(),
-            font_mode: FontMode::Monogram,
+            font_mode: FontMode::System,
             vanilla_branding: false,
         }
     }

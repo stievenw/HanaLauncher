@@ -422,6 +422,8 @@ impl HanaApp {
     pub fn new(cc: &eframe::CreationContext<'_>, brand: String, channel: String, warn_existing: bool) -> Self {
         let ctx = &cc.egui_ctx;
 
+        ctx.set_pixels_per_point(ctx.pixels_per_point() * 1.12);
+
         let mut visuals = egui::Visuals::light();
         visuals.panel_fill = BG_BOTTOM;
         visuals.extreme_bg_color = BG_BOTTOM;

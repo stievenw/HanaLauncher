@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "hana_launcher"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1668,6 +1668,13 @@ dependencies = [
  "winreg",
  "winresource",
  "zip",
+]
+
+[[package]]
+name = "hana_uninstaller"
+version = "1.0.7"
+dependencies = [
+ "winresource",
 ]
 
 [[package]]
