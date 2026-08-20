@@ -11,6 +11,10 @@ use crate::config::{save_config, Account, Config, Instance};
 use crate::minecraft::ManifestVersion;
 use crate::worker::{LaunchDecision, LaunchRequest, TaskEvent};
 
+/// Monogram renders small next to a system font at the same point size, so it
+/// is scaled up a bit when selected. The system font is left untouched.
+const MONOGRAM_SCALE: f32 = 1.12;
+
 /// Switch the whole launcher between the Monogram pixel font and the OS default.
 /// The TTF files ship in the external `resources/` folder; when they are missing
 /// the OS default is used regardless of the selected mode.
@@ -20,13 +24,17 @@ fn apply_font_mode(ctx: &egui::Context, mode: &crate::config::FontMode) {
         let regular = crate::assets::monogram_ttf();
         let italic = crate::assets::monogram_italic_ttf();
         if let (Some(regular), Some(italic)) = (regular, italic) {
+            let mut regular = egui::FontData::from_owned(regular);
+            regular.tweak.scale = MONOGRAM_SCALE;
+            let mut italic = egui::FontData::from_owned(italic);
+            italic.tweak.scale = MONOGRAM_SCALE;
             fonts.font_data.insert(
                 "monogram".to_owned(),
-                egui::FontData::from_owned(regular).into(),
+                regular.into(),
             );
             fonts.font_data.insert(
                 "monogram_italic".to_owned(),
-                egui::FontData::from_owned(italic).into(),
+                italic.into(),
             );
             for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
                 if let Some(list) = fonts.families.get_mut(&family) {
@@ -421,8 +429,6 @@ pub struct HanaApp {
 impl HanaApp {
     pub fn new(cc: &eframe::CreationContext<'_>, brand: String, channel: String, warn_existing: bool) -> Self {
         let ctx = &cc.egui_ctx;
-
-        ctx.set_pixels_per_point(ctx.pixels_per_point() * 1.12);
 
         let mut visuals = egui::Visuals::light();
         visuals.panel_fill = BG_BOTTOM;
