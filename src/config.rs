@@ -78,7 +78,7 @@ impl Installation {
             width: 854,
             height: 480,
             extra_jvm_args: String::new(),
-            authlib_url: "ely.by".to_string(),
+            authlib_url: "https://authserver.ely.by".to_string(),
         }
     }
 
@@ -164,7 +164,7 @@ fn default_height() -> u32 {
     480
 }
 fn default_authlib() -> String {
-    "ely.by".to_string()
+    "https://authserver.ely.by".to_string()
 }
 fn default_dl_java() -> bool {
     true
@@ -440,7 +440,7 @@ impl Config {
             inst.height = 480;
         }
         inst.extra_jvm_args = s("extra_jvm_args").unwrap_or_default();
-        inst.authlib_url = s("authlib_url").unwrap_or_else(|| "ely.by".to_string());
+        inst.authlib_url = s("authlib_url").unwrap_or_else(|| "https://authserver.ely.by".to_string());
 
         self.installations = vec![inst];
         self.active_installation = Some("Bawaan".to_string());

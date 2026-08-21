@@ -341,7 +341,7 @@ impl HanaApp {
                 ui.add(
                     egui::TextEdit::singleline(&mut draft.authlib_url)
                         .desired_width(200.0)
-                        .hint_text("ely.by"),
+                        .hint_text("https://authserver.ely.by"),
                 );
             });
             ui.add_space(8.0);

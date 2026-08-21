@@ -190,7 +190,7 @@ impl InstallationDraft {
             width: 854,
             height: 480,
             extra_jvm_args: String::new(),
-            authlib_url: "ely.by".to_string(),
+            authlib_url: "https://authserver.ely.by".to_string(),
         }
     }
 
