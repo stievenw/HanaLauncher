@@ -193,9 +193,9 @@ fn launch_inner(ctx: &TaskCtx, req: &LaunchRequest, root: &PathBuf) -> Result<()
     let lang = crate::lang::current();
     let inst = req
         .config
-        .active_instance()
+        .active_installation()
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!(lang.no_active_instance_err))?;
+        .ok_or_else(|| anyhow::anyhow!(lang.no_active_installation_err))?;
 
     // Resolve which version to launch. The built-in "latest" instance always
     // re-checks the newest stable release from the manifest on every play.

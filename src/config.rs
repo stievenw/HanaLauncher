@@ -1,4 +1,4 @@
-﻿#![allow(dead_code)]
+#![allow(dead_code)]
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -36,8 +36,8 @@ impl Account {
     }
 }
 
-/// Key (name) reserved for the built-in "latest stable release" instance.
-pub const LATEST_INSTANCE_KEY: &str = "latest";
+/// Key (name) reserved for the built-in "latest stable release" installation.
+pub const LATEST_INSTALLATION_KEY: &str = "latest";
 
 /// Which font is used to render the whole launcher UI.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -50,9 +50,9 @@ pub enum FontMode {
     System,
 }
 
-/// A playable instance (like the Minecraft Launcher installations).
+/// A playable installation (like the Minecraft Launcher installations).
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Instance {
+pub struct Installation {
     pub name: String,
     pub version_id: Option<String>,
     #[serde(default)]
@@ -66,7 +66,7 @@ pub struct Instance {
     pub authlib_url: String,
 }
 
-impl Instance {
+impl Installation {
     pub fn new(name: String) -> Self {
         Self {
             name,
@@ -82,12 +82,12 @@ impl Instance {
         }
     }
 
-    /// The built-in instance that always resolves to the newest stable release.
+    /// The built-in installation that always resolves to the newest stable release.
     pub fn latest() -> Self {
         Self {
-            name: LATEST_INSTANCE_KEY.to_string(),
+            name: LATEST_INSTALLATION_KEY.to_string(),
             is_latest: true,
-            ..Self::new(LATEST_INSTANCE_KEY.to_string())
+            ..Self::new(LATEST_INSTALLATION_KEY.to_string())
         }
     }
 
@@ -102,16 +102,16 @@ pub struct Config {
     #[serde(default)]
     pub active_account_index: Option<usize>,
 
-    #[serde(default)]
-    pub instances: Vec<Instance>,
-    #[serde(default)]
-    pub active_instance: Option<String>,
+    #[serde(default, alias = "instances")]
+    pub installations: Vec<Installation>,
+    #[serde(default, alias = "active_instance")]
+    pub active_installation: Option<String>,
 
     /// The global Launcher Directory (like the official Minecraft launcher's
     /// game directory). This is where the launcher reads/writes versions,
     /// libraries, assets, runtime and game data. `None` (default) means the
     /// original `~/.minecraft` folder; any other path can be used to read
-    /// instances/versions created by other launchers.
+    /// installations/versions created by other launchers.
     #[serde(default)]
     pub launcher_directory: Option<String>,
 
@@ -125,7 +125,7 @@ pub struct Config {
     #[serde(skip)]
     pub channel: String,
 
-    // Defaults used when creating a new instance.
+    // Defaults used when creating a new installation.
     #[serde(default = "default_memory")]
     pub default_memory_mb: u32,
     #[serde(default = "default_width")]
@@ -178,8 +178,8 @@ impl Default for Config {
         Self {
             accounts: Vec::new(),
             active_account_index: None,
-            instances: Vec::new(),
-            active_instance: None,
+            installations: Vec::new(),
+            active_installation: None,
             launcher_directory: None,
             show_all_versions: false,
             brand: crate::util::DEFAULT_BRAND.to_string(),
@@ -206,46 +206,46 @@ impl Config {
         self.active_account_index.and_then(|i| self.accounts.get_mut(i))
     }
 
-    pub fn active_instance(&self) -> Option<&Instance> {
-        self.active_instance
+    pub fn active_installation(&self) -> Option<&Installation> {
+        self.active_installation
             .as_ref()
-            .and_then(|n| self.instances.iter().find(|i| &i.name == n))
+            .and_then(|n| self.installations.iter().find(|i| &i.name == n))
     }
 
-    pub fn active_instance_mut(&mut self) -> Option<&mut Instance> {
-        self.active_instance
+    pub fn active_installation_mut(&mut self) -> Option<&mut Installation> {
+        self.active_installation
             .as_ref()
-            .and_then(|n| self.instances.iter_mut().find(|i| &i.name == n))
+            .and_then(|n| self.installations.iter_mut().find(|i| &i.name == n))
     }
 
-    /// Pick a valid active instance (or none if there are no instances at all).
-    pub fn normalize_active_instance(&mut self) {
-        if self.active_instance.is_none()
+    /// Pick a valid active installation (or none if there are no installations at all).
+    pub fn normalize_active_installation(&mut self) {
+        if self.active_installation.is_none()
             || self
-                .active_instance
+                .active_installation
                 .as_ref()
-                .map_or(true, |n| !self.instances.iter().any(|i| &i.name == n))
+                .map_or(true, |n| !self.installations.iter().any(|i| &i.name == n))
         {
-            self.active_instance = self.instances.first().map(|i| i.name.clone());
+            self.active_installation = self.installations.first().map(|i| i.name.clone());
         }
     }
 
-    /// Make sure the built-in "latest" instance exists (at index 0).
+    /// Make sure the built-in "latest" installation exists (at index 0).
     /// Returns true if it was newly inserted (and activates it for first-run/upgrade).
     pub fn ensure_latest(&mut self) -> bool {
-        if self.instances.iter().any(|i| i.is_latest) {
+        if self.installations.iter().any(|i| i.is_latest) {
             return false;
         }
-        let mut latest = Instance::latest();
+        let mut latest = Installation::latest();
         latest.memory_mb = self.default_memory_mb;
-        latest.java_path = self.instances.first().and_then(|i| i.java_path.clone());
+        latest.java_path = self.installations.first().and_then(|i| i.java_path.clone());
         latest.download_java = self.default_download_java;
         latest.width = self.default_width;
         latest.height = self.default_height;
         latest.extra_jvm_args = self.default_extra_jvm_args.clone();
         latest.authlib_url = self.default_authlib_url.clone();
-        self.instances.insert(0, latest);
-        self.active_instance = Some(LATEST_INSTANCE_KEY.to_string());
+        self.installations.insert(0, latest);
+        self.active_installation = Some(LATEST_INSTALLATION_KEY.to_string());
         true
     }
 
@@ -275,7 +275,7 @@ impl Config {
 
     /// The launcher's own data root (the folder next to the exe, or AppData
     /// when the exe folder is not writable). Used for launcher-wide data
-    /// (logs) and as the default for instances that use "Launcher" mode.
+    /// (logs) and as the default for installations that use "Launcher" mode.
     pub fn launcher_root() -> PathBuf {
         minecraft_root().unwrap_or_else(|_| PathBuf::from("."))
     }
@@ -396,26 +396,26 @@ pub fn load_config() -> Config {
         Err(_) => Config::default(),
     };
     cfg.migrate(legacy.as_ref());
-    cfg.migrate_instance_dirs(legacy.as_ref());
+    cfg.migrate_installation_dirs(legacy.as_ref());
     if cfg.launcher_directory.is_none() {
         if let Some(dir) = setup_launcher_dir() {
             cfg.launcher_directory = dir;
         }
     }
     cfg.ensure_latest();
-    cfg.normalize_active_instance();
+    cfg.normalize_active_installation();
     let _ = save_config(&cfg);
     cfg
 }
 
 impl Config {
-    /// Migrate legacy single-version settings into a "Bawaan" instance.
+    /// Migrate legacy single-version settings into a "Bawaan" installation.
     fn migrate(&mut self, legacy: Option<&serde_json::Value>) {
-        // Fresh install: nothing to migrate, `ensure_latest` builds the instance list.
+        // Fresh install: nothing to migrate, `ensure_latest` builds the installation list.
         let Some(legacy) = legacy else {
             return;
         };
-        if !self.instances.is_empty() {
+        if !self.installations.is_empty() {
             return;
         }
         let get = |key: &str| legacy.get(key).cloned();
@@ -423,7 +423,7 @@ impl Config {
         let n = |key: &str| get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let b = |key: &str| get(key).and_then(|v| v.as_bool()).unwrap_or(true);
 
-        let mut inst = Instance::new("Bawaan".to_string());
+        let mut inst = Installation::new("Bawaan".to_string());
         inst.version_id = s("selected_version");
         inst.memory_mb = n("memory_mb");
         if inst.memory_mb == 0 {
@@ -442,17 +442,17 @@ impl Config {
         inst.extra_jvm_args = s("extra_jvm_args").unwrap_or_default();
         inst.authlib_url = s("authlib_url").unwrap_or_else(|| "ely.by".to_string());
 
-        self.instances = vec![inst];
-        self.active_instance = Some("Bawaan".to_string());
+        self.installations = vec![inst];
+        self.active_installation = Some("Bawaan".to_string());
         let _ = save_config(self);
     }
 
     /// Port the old separate game/data folder settings onto the single global
-    /// Launcher Directory. Old configs used per-instance (and, even older,
+    /// Launcher Directory. Old configs used per-installation (and, even older,
     /// global) `data_dir_mode`/`game_dir_mode` with `Launcher`, `Original` or
     /// `Custom`; a `Custom` path becomes the global `launcher_directory`,
     /// everything else keeps the default `.minecraft` directory.
-    fn migrate_instance_dirs(&mut self, legacy: Option<&serde_json::Value>) {
+    fn migrate_installation_dirs(&mut self, legacy: Option<&serde_json::Value>) {
         let Some(legacy) = legacy else {
             return;
         };
@@ -469,7 +469,7 @@ impl Config {
             .map(str::to_string);
         let legacy_insts = legacy.get("instances").and_then(|v| v.as_array());
         let mut custom: Option<String> = None;
-        for (i, _inst) in self.instances.iter().enumerate() {
+        for (i, _inst) in self.installations.iter().enumerate() {
             let li = legacy_insts.and_then(|a| a.get(i)).and_then(|v| v.as_object());
             let li_s = |key: &str| {
                 li.and_then(|o| o.get(key))

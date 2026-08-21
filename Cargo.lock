@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "hana_launcher"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "anyhow",
  "chrono",
