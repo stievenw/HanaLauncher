@@ -10,7 +10,7 @@
      xmlns:bal="http://schemas.microsoft.com/wix/BalExtension">
 
   <Bundle Name="Hana Launcher"
-          Version="1.0.10"
+          Version="1.1.0"
           Manufacturer="StievenW"
           UpgradeCode="AB403C0C-D365-4812-B5DE-0060465FB5AC"
           IconSourceFile="..\assets\icon.ico">
